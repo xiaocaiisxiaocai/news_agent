@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}话题趋势{% endblock %}
+{% block content %}
+<h1>话题趋势</h1><p class="sub">最近 7 天关键词频率与话题聚合</p>
+<div class="grid2">
+  <div class="card"><h2>高频关键词</h2>
+    {% if trending %}
+    <div>{% for kw,cnt in trending %}
+    <div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:.5px solid var(--b)">
+      <span style="flex:1;font-size:13px">{{kw}}</span>
+      <span style="font-size:12px;color:var(--t2)">{{cnt}}</span>
+      <div style="width:80px;height:5px;background:rgba(0,0,0,.05);border-radius:2px">
+        <div style="height:100%;width:{{(cnt*100//trending[0][1]) if trending else 0}}%;background:var(--pr)"></div></div>
+    </div>{% endfor %}</div>
+    {% else %}<div class="empty">暂无数据，处理更多文章后返回查看</div>{% endif %}
+  </div>
+  <div class="card"><h2>话题聚合</h2>
+    {% if topics %}{% for t in topics %}
+    <div style="padding:10px 0;border-bottom:.5px solid var(--b)">
+      <div style="margin-bottom:5px">{% for kw in t.topic_keywords %}<span class="tag">{{kw}}</span>{% endfor %}
+      <span style="font-size:11px;color:var(--t3);margin-left:6px">{{t.article_count}}篇</span></div>
+      {% for a in t.articles %}<div style="font-size:12px;color:var(--t2);padding:2px 0">
+        {% if a.url %}<a href="{{a.url}}" target="_blank">{{a.title}}</a>{% else %}{{a.title}}{% endif %}
+      </div>{% endfor %}
+    </div>{% endfor %}
+    {% else %}<div class="empty">需要至少2篇关键词重叠的文章</div>{% endif %}
+  </div>
+</div>{% endblock %}

@@ -1,0 +1,406 @@
+{% extends "base.html" %}
+{% block title %}设置{% endblock %}
+{% block content %}
+<h1>设置</h1>
+<p class="sub">所有配置实时保存，修改后立即生效，无需重启</p>
+
+<div id="flash" class="flash"></div>
+
+<!-- ── LLM 配置 ── -->
+<div class="card">
+  <h2>LLM 配置</h2>
+  <div class="field">
+    <label>当前使用服务商</label>
+    <select id="llm-active">
+      <option value="deepseek" {{ 'selected' if all_cfg.get('llm.active')=='deepseek' else '' }}>DeepSeek</option>
+      <option value="qwen" {{ 'selected' if all_cfg.get('llm.active')=='qwen' else '' }}>通义千问 (Qwen)</option>
+      <option value="siliconflow" {{ 'selected' if all_cfg.get('llm.active')=='siliconflow' else '' }}>硅基流动 SiliconFlow</option>
+    </select>
+  </div>
+
+  {% for provider, label in [('deepseek','DeepSeek'), ('qwen','通义千问'), ('siliconflow','硅基流动')] %}
+  <div class="sep"></div>
+  <h3>{{ label }}</h3>
+  <div class="grid2">
+    <div class="field">
+      <label>API Key</label>
+      <input type="password" id="llm-{{provider}}-key"
+             value="{{ all_cfg.get('llm.'+provider+'.key','') }}"
+             placeholder="sk-... 或对应格式的 Key">
+    </div>
+    <div class="field">
+      <label>Base URL</label>
+      <input type="url" id="llm-{{provider}}-url"
+             value="{{ all_cfg.get('llm.'+provider+'.url','') }}">
+    </div>
+    <div class="field">
+      <label>模型名称</label>
+      <input id="llm-{{provider}}-model"
+             value="{{ all_cfg.get('llm.'+provider+'.model','') }}">
+    </div>
+  </div>
+  {% endfor %}
+
+  <div class="sep"></div>
+  <div class="grid2">
+    <div class="field"><label>请求超时（秒）</label>
+      <input type="number" id="llm-timeout" value="{{ all_cfg.get('llm.timeout','60') }}" min="10" max="300"></div>
+    <div class="field"><label>失败重试次数</label>
+      <input type="number" id="llm-retries" value="{{ all_cfg.get('llm.max_retries','3') }}" min="0" max="10"></div>
+    <div class="field"><label>重试间隔（秒）</label>
+      <input type="number" id="llm-delay" value="{{ all_cfg.get('llm.retry_delay','2') }}" min="1" max="30"></div>
+  </div>
+  <div class="row" style="margin-top:4px">
+    <button class="btn-p shrink" onclick="saveLLM()">保存 LLM 配置</button>
+    <button class="shrink" onclick="testLLM()">测试连接</button>
+    <span id="llm-test-result" style="font-size:13px"></span>
+  </div>
+</div>
+
+<!-- ── 功能开关 ── -->
+<div class="card">
+  <h2>功能开关</h2>
+  <div class="grid2">
+    <div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:.5px solid var(--b)">
+        <div><div style="font-size:13px">Evaluator 质检</div>
+          <div style="font-size:11px;color:var(--t2)">摘要不合格自动重生</div></div>
+        <input type="checkbox" id="feat-evaluator" {{ 'checked' if all_cfg.get('feature.evaluator','true')=='true' else '' }}>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:.5px solid var(--b)">
+        <div><div style="font-size:13px">重要性评分</div>
+          <div style="font-size:11px;color:var(--t2)">LLM 打 1-5 分</div></div>
+        <input type="checkbox" id="feat-importance" {{ 'checked' if all_cfg.get('feature.importance','true')=='true' else '' }}>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:.5px solid var(--b)">
+        <div><div style="font-size:13px">双语摘要</div>
+          <div style="font-size:11px;color:var(--t2)">英文文章附中文翻译</div></div>
+        <input type="checkbox" id="feat-bilingual" {{ 'checked' if all_cfg.get('feature.bilingual','true')=='true' else '' }}>
+      </div>
+    </div>
+    <div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:.5px solid var(--b)">
+        <div><div style="font-size:13px">关键词提取</div>
+          <div style="font-size:11px;color:var(--t2)">话题聚合与趋势需要</div></div>
+        <input type="checkbox" id="feat-keywords" {{ 'checked' if all_cfg.get('feature.keywords','true')=='true' else '' }}>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:.5px solid var(--b)">
+        <div><div style="font-size:13px">话题聚合</div>
+          <div style="font-size:11px;color:var(--t2)">跨文章关联</div></div>
+        <input type="checkbox" id="feat-topic" {{ 'checked' if all_cfg.get('feature.topic_cluster','true')=='true' else '' }}>
+      </div>
+      <div style="padding:8px 0">
+        <label style="margin-bottom:4px">并发处理数（越大越快，但易限流）</label>
+        <input type="number" id="feat-workers" value="{{ all_cfg.get('feature.max_workers','5') }}" min="1" max="20" style="width:80px">
+      </div>
+    </div>
+  </div>
+  <div class="grid2" style="margin-top:12px">
+    <div class="field"><label>Evaluator 最低分（低于此分重生，1-10）</label>
+      <input type="number" id="feat-eval-score" value="{{ all_cfg.get('feature.eval_min_score','7') }}" min="1" max="10"></div>
+    <div class="field"><label>Evaluator 最多重生次数</label>
+      <input type="number" id="feat-eval-retry" value="{{ all_cfg.get('feature.eval_max_retry','1') }}" min="0" max="5"></div>
+  </div>
+  <button class="btn-p" onclick="saveFeatures()">保存功能设置</button>
+</div>
+
+<!-- ── RSS ── -->
+<div class="card">
+  <h2>RSS 订阅（也可在 RSS 页面管理）</h2>
+  <div class="field">
+    <label>订阅源列表（每行一个 URL）</label>
+    <textarea id="rss-feeds" rows="6">{{ all_cfg.get('rss.feeds','[]') | tojson }}</textarea>
+  </div>
+  <div class="grid2">
+    <div class="field"><label>每源最多拉取条数</label>
+      <input type="number" id="rss-max" value="{{ all_cfg.get('rss.max_per_feed','5') }}" min="1" max="50"></div>
+  </div>
+  <button class="btn-p" onclick="saveRSS()">保存 RSS 设置</button>
+</div>
+
+<!-- ── 邮件 ── -->
+<div class="card">
+  <h2>邮件 Newsletter</h2>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+    <input type="checkbox" id="email-enabled" {{ 'checked' if all_cfg.get('email.enabled','false')=='true' else '' }}>
+    <label style="margin:0;font-size:13px;color:var(--t)">启用邮件拉取</label>
+  </div>
+  <div class="grid2">
+    <div class="field"><label>IMAP 服务器</label>
+      <input id="email-server" value="{{ all_cfg.get('email.imap_server','imap.gmail.com') }}"
+             placeholder="imap.gmail.com / imap.163.com / imap.qq.com"></div>
+    <div class="field"><label>邮箱地址</label>
+      <input type="email" id="email-user" value="{{ all_cfg.get('email.username','') }}"></div>
+    <div class="field"><label>密码（建议用应用专用密码）</label>
+      <input type="password" id="email-pass" value="{{ all_cfg.get('email.password','') }}"
+             placeholder="Gmail 需用应用专用密码"></div>
+    <div class="field"><label>标签/文件夹</label>
+      <input id="email-label" value="{{ all_cfg.get('email.label','Newsletter') }}"
+             placeholder="Gmail Label 或文件夹名"></div>
+    <div class="field"><label>每次最多拉取封数</label>
+      <input type="number" id="email-limit" value="{{ all_cfg.get('email.limit','10') }}" min="1" max="100"></div>
+  </div>
+  <button class="btn-p" onclick="saveEmail()">保存邮件设置</button>
+</div>
+
+<!-- ── 个性化偏好 ── -->
+<div class="card">
+  <h2>个性化偏好</h2>
+  <p style="font-size:12px;color:var(--t2);margin-bottom:14px">
+    关键词命中时调整重要性分数。加分词让你关注的话题排更前；扣分词让不感兴趣的降权；屏蔽词直接打 1 分。
+  </p>
+
+  <div class="grid2">
+    <div>
+      <h3>加分词</h3>
+      <div id="boost-list"></div>
+      <div class="row" style="margin-top:8px">
+        <input id="boost-kw" placeholder="关键词" style="flex:2">
+        <input id="boost-w" type="number" value="1" min="1" max="5" style="width:60px;flex:0 0 auto">
+        <button class="shrink btn-sm" onclick="addBoost()">添加</button>
+      </div>
+    </div>
+    <div>
+      <h3>扣分词</h3>
+      <div id="penalty-list"></div>
+      <div class="row" style="margin-top:8px">
+        <input id="penalty-kw" placeholder="关键词" style="flex:2">
+        <input id="penalty-w" type="number" value="1" min="1" max="5" style="width:60px;flex:0 0 auto">
+        <button class="shrink btn-sm" onclick="addPenalty()">添加</button>
+      </div>
+    </div>
+  </div>
+  <div class="sep"></div>
+  <h3>屏蔽词（直接打1分）</h3>
+  <div id="muted-list" style="margin-bottom:8px"></div>
+  <div class="row" style="max-width:400px">
+    <input id="muted-kw" placeholder="屏蔽关键词">
+    <button class="shrink btn-sm" onclick="addMuted()">添加</button>
+  </div>
+  <div class="sep"></div>
+  <h3>分类权重调整</h3>
+  <div class="grid2" id="cat-weights"></div>
+  <div style="margin-top:14px">
+    <button class="btn-p" onclick="savePrefs()">保存偏好设置</button>
+  </div>
+</div>
+
+<!-- ── 简报 & 定时 ── -->
+<div class="card">
+  <h2>简报 & 定时任务</h2>
+  <div class="grid2">
+    <div class="field"><label>简报 Top N 篇数</label>
+      <input type="number" id="brief-n" value="{{ all_cfg.get('brief.top_n','5') }}" min="1" max="20"></div>
+    <div class="field"><label>简报最低重要性</label>
+      <input type="number" id="brief-imp" value="{{ all_cfg.get('brief.min_importance','3') }}" min="1" max="5"></div>
+    <div class="field"><label>定时拉取 RSS 时间（HH:MM）</label>
+      <input id="sched-rss" value="{{ all_cfg.get('schedule.rss_time','08:30') }}" placeholder="08:30"></div>
+    <div class="field"><label>定时生成简报时间（HH:MM）</label>
+      <input id="sched-brief" value="{{ all_cfg.get('schedule.brief_time','21:00') }}" placeholder="21:00"></div>
+  </div>
+  <button class="btn-p" onclick="saveBrief()">保存</button>
+</div>
+
+<!-- ── Web 服务 ── -->
+<div class="card">
+  <h2>Web 服务</h2>
+  <div class="grid2">
+    <div class="field"><label>监听地址（重启后生效）</label>
+      <input id="web-host" value="{{ all_cfg.get('web.host','127.0.0.1') }}"></div>
+    <div class="field"><label>端口（重启后生效）</label>
+      <input type="number" id="web-port" value="{{ all_cfg.get('web.port','5000') }}" min="1024" max="65535"></div>
+  </div>
+  <button class="btn-p" onclick="saveWeb()">保存</button>
+</div>
+
+<!-- ── 缓存管理 ── -->
+<div class="card">
+  <h2>缓存管理</h2>
+  <div id="cache-info" style="font-size:13px;color:var(--t2);margin-bottom:12px">加载中...</div>
+  <div class="row">
+    <div class="field shrink"><label>清理多少天前的缓存</label>
+      <input type="number" id="cache-days" value="30" min="1" style="width:80px"></div>
+    <button class="shrink" style="align-self:flex-end" onclick="clearCache()">清理旧缓存</button>
+  </div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+const ALL_CFG = {{ all_cfg | tojson }};
+
+// ── 偏好数据 ──────────────────────────────────────────────
+let prefs = {boost:{}, penalty:{}, muted:[], cat_weight:{}};
+
+async function loadPrefs(){
+  prefs = await api('/api/preferences');
+  renderBoost(); renderPenalty(); renderMuted(); renderCatWeights();
+}
+
+function renderBoost(){
+  document.getElementById('boost-list').innerHTML = Object.entries(prefs.boost||{}).map(([k,v])=>
+    `<div class="row" style="margin-bottom:4px"><span style="flex:1;font-size:13px">${esc(k)}</span>
+    <span class="badge b-ok">+${v}</span>
+    <button class="shrink btn-sm btn-err" onclick="delBoost('${esc(k)}')">删除</button></div>`
+  ).join('') || '<div style="color:var(--t3);font-size:12px">空</div>'
+}
+
+function renderPenalty(){
+  document.getElementById('penalty-list').innerHTML = Object.entries(prefs.penalty||{}).map(([k,v])=>
+    `<div class="row" style="margin-bottom:4px"><span style="flex:1;font-size:13px">${esc(k)}</span>
+    <span class="badge b-err">${v}</span>
+    <button class="shrink btn-sm btn-err" onclick="delPenalty('${esc(k)}')">删除</button></div>`
+  ).join('') || '<div style="color:var(--t3);font-size:12px">空</div>'
+}
+
+function renderMuted(){
+  document.getElementById('muted-list').innerHTML = (prefs.muted||[]).map(k=>
+    `<span class="tag" style="margin-right:4px">${esc(k)}
+    <button onclick="delMuted('${esc(k)}')" style="border:none;background:none;cursor:pointer;padding:0 0 0 4px;color:var(--t3)">×</button></span>`
+  ).join('')
+}
+
+const CATS = ['科技/AI','商业','学术','即刻','B站','其他'];
+function renderCatWeights(){
+  document.getElementById('cat-weights').innerHTML = CATS.map(c=>`
+    <div class="field"><label>${c} 权重</label>
+    <input type="number" id="cw-${c.replace('/','_')}" value="${(prefs.cat_weight||{})[c]||0}" min="-3" max="3" step="1"></div>`
+  ).join('')
+}
+
+function addBoost(){
+  const k=document.getElementById('boost-kw').value.trim(), w=parseInt(document.getElementById('boost-w').value)||1;
+  if(!k)return; prefs.boost[k]=w; document.getElementById('boost-kw').value=''; renderBoost()
+}
+function delBoost(k){delete prefs.boost[k]; renderBoost()}
+function addPenalty(){
+  const k=document.getElementById('penalty-kw').value.trim(), w=parseInt(document.getElementById('penalty-w').value)||1;
+  if(!k)return; prefs.penalty[k]=-Math.abs(w); document.getElementById('penalty-kw').value=''; renderPenalty()
+}
+function delPenalty(k){delete prefs.penalty[k]; renderPenalty()}
+function addMuted(){
+  const k=document.getElementById('muted-kw').value.trim();
+  if(!k)return; if(!prefs.muted.includes(k))prefs.muted.push(k);
+  document.getElementById('muted-kw').value=''; renderMuted()
+}
+function delMuted(k){prefs.muted=prefs.muted.filter(x=>x!==k); renderMuted()}
+
+async function savePrefs(){
+  const cw={};
+  CATS.forEach(c=>{const id='cw-'+c.replace('/','_'); const el=document.getElementById(id); if(el)cw[c]=parseInt(el.value)||0});
+  prefs.cat_weight=cw;
+  await api('/api/preferences', prefs);
+  flash(document.getElementById('flash'),'偏好设置已保存')
+}
+
+// ── LLM ──────────────────────────────────────────────────
+async function saveLLM(){
+  const data = {'llm.active': document.getElementById('llm-active').value};
+  ['deepseek','qwen','siliconflow'].forEach(p=>{
+    ['key','url','model'].forEach(f=>{ data[`llm.${p}.${f}`] = document.getElementById(`llm-${p}-${f}`).value.trim() })
+  });
+  data['llm.timeout']      = document.getElementById('llm-timeout').value;
+  data['llm.max_retries']  = document.getElementById('llm-retries').value;
+  data['llm.retry_delay']  = document.getElementById('llm-delay').value;
+  await api('/api/config', data);
+  flash(document.getElementById('flash'), 'LLM 配置已保存')
+}
+
+async function testLLM(){
+  const btn = event.target; btn.disabled=true; btn.textContent='测试中...';
+  const res = document.getElementById('llm-test-result');
+  // 先保存当前表单，再测试
+  await saveLLM();
+  const d = await api('/api/test-llm', {});
+  btn.disabled=false; btn.textContent='测试连接';
+  if(d.ok){ res.style.color='var(--ok)'; res.textContent='✓ 连接正常：'+d.response }
+  else { res.style.color='var(--err)'; res.textContent='✗ 失败：'+d.error }
+}
+
+// ── 功能开关 ─────────────────────────────────────────────
+async function saveFeatures(){
+  const data = {
+    'feature.evaluator':      document.getElementById('feat-evaluator').checked?'true':'false',
+    'feature.importance':     document.getElementById('feat-importance').checked?'true':'false',
+    'feature.bilingual':      document.getElementById('feat-bilingual').checked?'true':'false',
+    'feature.keywords':       document.getElementById('feat-keywords').checked?'true':'false',
+    'feature.topic_cluster':  document.getElementById('feat-topic').checked?'true':'false',
+    'feature.max_workers':    document.getElementById('feat-workers').value,
+    'feature.eval_min_score': document.getElementById('feat-eval-score').value,
+    'feature.eval_max_retry': document.getElementById('feat-eval-retry').value,
+  };
+  await api('/api/config', data);
+  flash(document.getElementById('flash'), '功能设置已保存')
+}
+
+// ── RSS ──────────────────────────────────────────────────
+async function saveRSS(){
+  let raw = document.getElementById('rss-feeds').value.trim();
+  let feeds;
+  try { feeds = JSON.parse(raw); if(!Array.isArray(feeds)) throw 1; }
+  catch { feeds = raw.split('\n').map(s=>s.trim()).filter(Boolean); }
+  await api('/api/rss-feeds', {feeds});
+  await api('/api/config', {'rss.max_per_feed': document.getElementById('rss-max').value});
+  flash(document.getElementById('flash'), 'RSS 设置已保存，共 '+feeds.length+' 个源')
+}
+
+// ── 邮件 ─────────────────────────────────────────────────
+async function saveEmail(){
+  const data = {
+    'email.enabled':     document.getElementById('email-enabled').checked?'true':'false',
+    'email.imap_server': document.getElementById('email-server').value.trim(),
+    'email.username':    document.getElementById('email-user').value.trim(),
+    'email.password':    document.getElementById('email-pass').value,
+    'email.label':       document.getElementById('email-label').value.trim(),
+    'email.limit':       document.getElementById('email-limit').value,
+  };
+  await api('/api/config', data);
+  flash(document.getElementById('flash'), '邮件设置已保存')
+}
+
+// ── 简报 & 定时 ───────────────────────────────────────────
+async function saveBrief(){
+  await api('/api/config', {
+    'brief.top_n':          document.getElementById('brief-n').value,
+    'brief.min_importance': document.getElementById('brief-imp').value,
+    'schedule.rss_time':    document.getElementById('sched-rss').value,
+    'schedule.brief_time':  document.getElementById('sched-brief').value,
+  });
+  flash(document.getElementById('flash'), '已保存')
+}
+
+// ── Web ──────────────────────────────────────────────────
+async function saveWeb(){
+  await api('/api/config', {
+    'web.host': document.getElementById('web-host').value.trim(),
+    'web.port': document.getElementById('web-port').value,
+  });
+  flash(document.getElementById('flash'), '已保存（重启后生效）')
+}
+
+// ── 缓存 ─────────────────────────────────────────────────
+async function loadCacheInfo(){
+  const d = await api('/api/cache-stats');
+  document.getElementById('cache-info').textContent =
+    `共 ${d.total_entries} 条缓存，累计命中 ${d.total_hits} 次（节省了 ${d.total_hits} 次 API 调用）`
+}
+
+async function clearCache(){
+  const days = parseInt(document.getElementById('cache-days').value)||30;
+  const d = await api('/api/cache-clear', {days});
+  flash(document.getElementById('flash'), `已清理 ${d.cleared} 条（${days}天前）`);
+  loadCacheInfo()
+}
+
+// ── 初始化 ────────────────────────────────────────────────
+loadPrefs();
+loadCacheInfo();
+
+// RSS 文本框美化：把 JSON 数组转成每行一个 URL
+const rssEl = document.getElementById('rss-feeds');
+try {
+  const feeds = JSON.parse(rssEl.value);
+  if (Array.isArray(feeds)) rssEl.value = feeds.join('\n');
+} catch(e) {}
+</script>
+{% endblock %}

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{article.title}}{% endblock %}
+{% block content %}
+<p style="margin-bottom:12px"><a href="/articles">← 文章列表</a></p>
+<div class="card">
+  <h1 style="margin-bottom:8px">{{article.title}}</h1>
+  <div style="font-size:12px;color:var(--t2);margin-bottom:16px">
+    <span class="badge b-info">{{article.category}}</span>
+    <span style="margin:0 6px">·</span>
+    <span class="stars">{{'★'*article.importance}}</span><span class="stars-d">{{'☆'*(5-article.importance)}}</span>
+    <span style="margin:0 6px">·</span>{{article.created_at[:10]}}
+    {% if article.url %}<span style="margin:0 6px">·</span><a href="{{article.url}}" target="_blank">原文</a>{% endif %}
+  </div>
+  {% if article.conclusion %}
+  <div style="font-size:15px;font-weight:500;margin-bottom:12px;padding:12px 14px;background:var(--bg);border-radius:var(--r)">{{article.conclusion}}</div>{% endif %}
+  {% if article.points %}
+  <div style="margin-bottom:12px">{% for p in article.points.split('
+') %}{% if p.strip() %}<div style="padding:4px 0;color:var(--t2);font-size:13px">• {{p.strip()}}</div>{% endif %}{% endfor %}</div>{% endif %}
+  {% if article.action and article.action!='无' %}<div style="font-size:13px;color:var(--info);padding:8px 12px;background:rgba(26,111,184,.06);border-radius:var(--r);margin-bottom:12px">⚡ {{article.action}}</div>{% endif %}
+  {% if article.keywords %}<div>{% for k in article.keywords %}<span class="tag">{{k}}</span>{% endfor %}</div>{% endif %}
+</div>
+{% if article.summary %}
+<div class="card"><h2>完整摘要</h2>
+  <pre style="font:13px/1.8 inherit;white-space:pre-wrap;color:var(--t2)">{{article.summary}}</pre></div>{% endif %}
+{% if related %}
+<div class="card"><h2>相关文章</h2>
+  {% for r in related %}
+  <div style="padding:8px 0;border-bottom:.5px solid var(--b)">
+    <a href="/article/{{r.id}}">{{r.title}}</a>
+    <span style="font-size:11px;color:var(--t3);margin-left:8px">相似度 {{(r.similarity*100)|int}}%</span>
+    {% for k in r.overlap_keywords %}<span class="tag">{{k}}</span>{% endfor %}
+  </div>{% endfor %}
+</div>{% endif %}
+{% endblock %}

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}简报{% endblock %}
+{% block content %}
+<h1>每日简报</h1><p class="sub">历史简报存档</p>
+<div class="row" style="margin-bottom:16px">
+  <button class="btn-p" onclick="genBrief('md')">生成 Markdown 简报</button>
+  <button onclick="genBrief('html')">生成 HTML 简报</button>
+</div>
+<div id="flash" class="flash"></div>
+{% if briefs %}{% for b in briefs %}
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h2 style="margin:0">{{b.date}}</h2>
+    <div class="row shrink">
+      {% if b.files.get('md') %}<a href="/briefs/{{b.files.get('md')}}" download class="btn btn-sm">下载 MD</a>{% endif %}
+      {% if b.files.get('html') %}<a href="/briefs/{{b.files.get('html')}}" download class="btn btn-sm">下载 HTML</a>{% endif %}
+    </div>
+  </div>
+  <pre style="font:13px/1.8 inherit;white-space:pre-wrap;color:var(--t2)">{{b.content[:1000]}}{% if b.content|length>1000 %}...{% endif %}</pre>
+</div>{% endfor %}
+{% else %}<div class="empty">还没有简报，点"生成今日简报"</div>{% endif %}
+{% endblock %}
+{% block scripts %}<script>
+async function genBrief(fmt='md'){
+  const d=await api('/api/run-brief',{format:fmt});if(d.error){alert(d.error);return}
+  flash(document.getElementById('flash'),'简报生成中...');
+  const iv=setInterval(async()=>{const j=await api('/api/job/'+d.job_id);
+    if(j.status==='done'){clearInterval(iv);location.reload()}
+    else if(j.status==='error'){clearInterval(iv);flash(document.getElementById('flash'),j.result.error,false)}
+  },1000)}
+</script>{% endblock %}

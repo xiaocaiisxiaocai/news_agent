@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 数据文件
+data/
+*.db
+*.sqlite3
+
+# 生成的简报
+briefs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# 环境变量
+.env
+.ace-tool/

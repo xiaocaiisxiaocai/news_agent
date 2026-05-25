@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}质量监控{% endblock %}
+{% block content %}
+<h1>质量监控</h1><p class="sub">Evaluator 评分统计，最近 7 天</p>
+<div class="card"><h2>分类平均分</h2>
+  {% if stats.by_category %}
+  <table><thead><tr><th>分类</th><th>评估次数</th><th>平均分</th><th>最低</th><th>最高</th><th>触发重生</th></tr></thead>
+  <tbody>{% for r in stats.by_category %}
+  <tr>
+    <td>{{r.category}}</td><td>{{r.count}}</td>
+    <td><span class="{{'b-ok' if r.avg_score>=7 else 'b-warn' if r.avg_score>=5 else 'b-err'}} badge">{{r.avg_score}}</span></td>
+    <td style="color:var(--t2)">{{r.min_score}}</td><td style="color:var(--t2)">{{r.max_score}}</td>
+    <td style="color:var(--t2)">{{r.retried}}</td>
+  </tr>{% endfor %}</tbody></table>
+  {% else %}<div class="empty">尚无评分数据，需启用 Evaluator 后处理文章</div>{% endif %}
+</div>
+{% if stats.low_score_samples %}
+<div class="card"><h2>低分样本（分数 &lt; 7）</h2>
+  <table><thead><tr><th>分类</th><th>分数</th><th>问题</th></tr></thead><tbody>
+  {% for r in stats.low_score_samples %}
+  <tr><td>{{r.category}}</td><td style="color:var(--err)">{{r.score}}</td>
+  <td style="color:var(--t2);font-size:12px">{{r.issue}}</td></tr>{% endfor %}
+  </tbody></table>
+</div>{% endif %}{% endblock %}

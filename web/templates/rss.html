@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}RSS 管理{% endblock %}
+{% block content %}
+<h1>RSS 管理</h1><p class="sub">管理订阅源，修改后立即生效</p>
+<div id="flash" class="flash"></div>
+<div class="card">
+  <h2>订阅源列表</h2>
+  <div class="row" style="margin-bottom:10px">
+    <div class="stat" style="padding:8px 10px"><div class="stat-l">总源数</div><div class="stat-v" id="src-total" style="font-size:18px">0</div></div>
+    <div class="stat" style="padding:8px 10px"><div class="stat-l">已启用</div><div class="stat-v" id="src-enabled" style="font-size:18px">0</div></div>
+    <input id="src-filter" placeholder="搜索名称 / URL / 分类" oninput="renderList()">
+    <select id="enabled-filter" class="shrink" onchange="renderList()" style="width:120px">
+      <option value="all">全部</option>
+      <option value="enabled">只看启用</option>
+      <option value="disabled">只看关闭</option>
+    </select>
+    <select id="status-filter" class="shrink" onchange="renderList()" style="width:120px">
+      <option value="all">全部状态</option>
+      <option value="ok">只看成功</option>
+      <option value="warning">只看警告</option>
+      <option value="failed">只看失败</option>
+      <option value="unknown">只看未知</option>
+    </select>
+  </div>
+  <div id="feed-list"></div>
+  <div style="margin-top:10px" class="grid2">
+    <div class="field"><label>名称</label><input id="new-name" placeholder="来源名称"></div>
+    <div class="field"><label>分类</label><select id="new-cat">{% for c in categories %}<option value="{{c}}">{{c}}</option>{% endfor %}</select></div>
+  </div>
+  <div class="row">
+    <input type="url" id="new-feed" placeholder="https://example.com/feed 或 https://rsshub.app/...">
+    <button class="shrink" onclick="addFeed()">添加</button>
+  </div>
+  <div style="margin-top:12px" class="row">
+    <div><label>每源最多拉取条数</label><input type="number" id="max-per" value="{{max_per}}" min="1" max="50" style="width:80px"></div>
+    <div class="shrink" style="align-self:flex-end;display:flex;gap:8px">
+      <button class="btn-p" onclick="saveFeeds()">保存</button>
+      <button onclick="runRss()">立即拉取</button>
+      <button onclick="testAllFeeds()">测试全部</button>
+      <button class="btn-ok" onclick="enableOnlySuccessful()">仅启用成功源</button>
+    </div>
+  </div>
+</div>
+<div id="prog" style="display:none" class="card">
+  <div class="pbar"><div class="pbar-f" id="bar"></div></div>
+  <div id="stat" style="font-size:12px;color:var(--t2);margin-bottom:6px"></div>
+  <div class="log-box on" id="log"></div>
+</div>
+<div class="card"><h2>健康状态</h2>
+  {% if hmap %}
+  <div class="row" style="margin-bottom:10px">
+    <span class="badge b-ok">成功 {{ hmap.values()|selectattr('status','equalto','ok')|list|length }}</span>
+    <span class="badge b-warn">警告 {{ hmap.values()|selectattr('status','equalto','warning')|list|length }}</span>
+    <span class="badge b-err">失败 {{ hmap.values()|selectattr('status','equalto','dead')|list|length }}</span>
+    <span class="badge">未知 {{ sources|selectattr('enabled')|rejectattr('url','in',hmap.keys())|list|length }}</span>
+  </div>
+  <p class="sub" style="margin-bottom:10px">未知表示该源尚未测试过，或测试中断前还没轮到；不一定是网络问题。警告表示最近测试/拉取失败，连续多次失败后会变成失败。</p>
+  <table><thead><tr><th>来源</th><th>分类</th><th>地址</th><th>状态</th><th>失败原因</th><th>最近成功</th><th>累计</th><th>连续失败</th><th>最近错误</th></tr></thead><tbody>
+  {% for s in sources if s.enabled %}{% set url=s.url %}{% set h=hmap.get(url,{}) %}
+  {% set reason=classify_rss_error(h.get('last_error',''), h.get('status','')) %}
+  <tr>
+    <td>{{s.name}}</td>
+    <td><span class="badge b-info">{{s.category}}</span></td>
+    <td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{url}}</td>
+    <td>{% if h.get('status')=='ok' %}<span class="badge b-ok">正常</span>
+        {% elif h.get('status')=='warning' %}<span class="badge b-warn">警告</span>
+        {% elif h.get('status')=='dead' %}<span class="badge b-err">失效</span>
+        {% else %}<span class="badge">未知</span>{% endif %}</td>
+    <td><span class="badge {% if reason=='正常' %}b-ok{% elif reason!='—' %}b-warn{% endif %}">{{reason}}</span></td>
+    <td style="color:var(--t2);font-size:12px">{{h.get('last_success','—')[:16] if h.get('last_success') else '—'}}</td>
+    <td>{{h.get('total_items_fetched',0)}}</td>
+    <td>{% if h.get('consecutive_failures') %}<span style="color:var(--err)">{{h.consecutive_failures}}</span>{% else %}—{% endif %}</td>
+    <td style="color:var(--t2);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{h.get('last_error','')}}">{{h.get('last_error','') or '—'}}</td>
+  </tr>{% endfor %}
+  </tbody></table>
+  {% else %}<div class="empty">尚未拉取过，点"立即拉取"开始</div>{% endif %}
+</div>
+{% endblock %}
+{% block scripts %}<script>
+let sources = {{ sources|tojson }};
+let health = {{ hmap|tojson }};
+const categories = {{ categories|tojson }};
+const max_per = {{ max_per }};
+function escAttr(s){return esc(s).replace(/"/g,'&quot;')}
+function renderList(){
+  document.getElementById('src-total').textContent=sources.length;
+  document.getElementById('src-enabled').textContent=sources.filter(s=>s.enabled!==false).length;
+  const kw=(document.getElementById('src-filter')?.value||'').toLowerCase();
+  const mode=document.getElementById('enabled-filter')?.value||'all';
+  const statusMode=document.getElementById('status-filter')?.value||'all';
+  const rows=sources.map((s,i)=>({s,i})).filter(({s})=>{
+    const enabled=s.enabled!==false;
+    if(mode==='enabled'&&!enabled)return false;
+    if(mode==='disabled'&&enabled)return false;
+    const status=(health[s.url]&&health[s.url].status)||'unknown';
+    if(statusMode==='failed'&&status!=='warning'&&status!=='dead')return false;
+    if(statusMode!=='all'&&statusMode!=='failed'&&status!==statusMode)return false;
+    const hay=[s.name,s.url,s.category,s.source_type,s.note].join(' ').toLowerCase();
+    return !kw||hay.includes(kw);
+  });
+  document.getElementById('feed-list').innerHTML=rows.map(({s,i})=>{
+    { const status=(health[s.url]&&health[s.url].status)||'unknown';
+      const badge=status==='ok'?'<span class="badge b-ok shrink">成功</span>':(status==='dead'?'<span class="badge b-err shrink">失败</span>':(status==='warning'?'<span class="badge b-warn shrink">警告</span>':'<span class="badge shrink">未知</span>'));
+      return `<div class="row" style="margin-bottom:6px">
+    <label class="shrink" style="display:flex;align-items:center;gap:5px;margin:0"><input type="checkbox" ${s.enabled!==false?'checked':''} onchange="sources[${i}].enabled=this.checked" style="width:auto">启用</label>
+    <input value="${escAttr(s.name||'')}" oninput="sources[${i}].name=this.value" placeholder="名称" style="font-size:12px;flex:.8">
+    <select onchange="sources[${i}].category=this.value" style="font-size:12px;flex:.7">${categories.map(c=>`<option value="${escAttr(c)}" ${c===(s.category||'其他')?'selected':''}>${esc(c)}</option>`).join('')}</select>
+    <input value="${escAttr(s.url||'')}" oninput="sources[${i}].url=this.value" placeholder="RSS URL" style="font-size:12px;flex:2">
+    <span class="badge shrink">${esc(s.source_type||'自定义')}</span>
+    ${badge}
+    <button class="shrink btn-sm btn-err" onclick="sources.splice(${i},1);renderList()">删除</button>
+    <button class="shrink btn-sm" onclick="testFeed(sources[${i}].url,this)">测试</button></div>`}
+  }).join('')}
+renderList();
+async function testFeed(url,btn){btn.disabled=true;btn.textContent='测试中...';
+  const d=await api('/api/test-rss',{url});btn.disabled=false;
+  btn.textContent=d.ok?`✓ ${d.count}篇`:'✗ 失败'}
+function addFeed(){const v=document.getElementById('new-feed').value.trim();
+  if(!v)return;
+  const name=document.getElementById('new-name').value.trim()||new URL(v).hostname.replace(/^www\./,'');
+  sources.push({name,url:v,category:document.getElementById('new-cat').value,enabled:true});
+  document.getElementById('new-feed').value='';document.getElementById('new-name').value='';renderList()}
+async function saveFeeds(){
+  sources=sources.filter(s=>s.url&&s.url.trim()).map(s=>({name:s.name||s.url,url:s.url.trim(),category:s.category||'其他',enabled:s.enabled!==false,source_type:s.source_type||'自定义',note:s.note||''}));renderList();
+  const mp=parseInt(document.getElementById('max-per').value)||5;
+  await api('/api/rss-feeds',{sources});
+  await api('/api/config',{'rss.max_per_feed':String(mp)});
+  flash(document.getElementById('flash'),'已保存')}
+async function runRss(){
+  document.getElementById('prog').style.display='block';
+  const d=await api('/api/run-rss',{});if(d.error){alert(d.error);return}
+  pollJob(d.job_id,document.getElementById('log'),document.getElementById('bar'),document.getElementById('stat'),()=>location.reload())}
+async function testAllFeeds(){
+  document.getElementById('prog').style.display='block';
+  const d=await api('/api/test-rss-all',{});if(d.error){alert(d.error);return}
+  pollJob(d.job_id,document.getElementById('log'),document.getElementById('bar'),document.getElementById('stat'),()=>location.reload())}
+async function enableOnlySuccessful(){
+  const d=await api('/api/rss-enable-ok-only',{});
+  if(d.error){flash(document.getElementById('flash'),d.error,false);return}
+  flash(document.getElementById('flash'),`已启用 ${d.enabled} 个成功源，关闭 ${d.disabled} 个失败/警告/未知源`);
+  setTimeout(()=>location.reload(),800)
+}
+</script>{% endblock %}

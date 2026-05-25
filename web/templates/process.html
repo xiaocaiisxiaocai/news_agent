@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}处理内容{% endblock %}
+{% block content %}
+<h1>处理内容</h1><p class="sub">粘贴链接或文本，自动分类摘要后存入本地数据库</p>
+<div class="card">
+  <h2>处理链接</h2>
+  <div class="field"><label>文章 URL（支持微信公众号/掘金/36氪等）</label>
+  <input type="url" id="url-in" placeholder="https://..."></div>
+  <button class="btn-p" onclick="submitUrl()">处理链接</button>
+</div>
+<div class="card">
+  <h2>粘贴文本</h2>
+  <div class="row" style="margin-bottom:12px">
+    <div class="field" style="margin:0"><label>标题（可选）</label><input type="text" id="t-title" placeholder="文章标题"></div>
+    <div class="field" style="margin:0"><label>来源（可选）</label><input type="text" id="t-src" placeholder="微信公众号 / 即刻 ..."></div>
+    <div class="field" style="margin:0"><label>原文链接（可选）</label><input type="url" id="t-url" placeholder="https://..."></div>
+  </div>
+  <div class="field"><label>正文内容</label><textarea id="t-body" placeholder="粘贴文章正文..."></textarea></div>
+  <button class="btn-p" onclick="submitText()">处理文本</button>
+</div>
+<div id="prog-area" style="display:none" class="card">
+  <div class="pbar"><div class="pbar-f" id="bar"></div></div>
+  <div id="stat" style="font-size:12px;color:var(--t2);margin-bottom:8px"></div>
+  <div class="log-box on" id="log"></div>
+  <div id="result" style="margin-top:12px"></div>
+</div>
+{% endblock %}
+{% block scripts %}<script>
+function showProg(){document.getElementById('prog-area').style.display='block';
+  document.getElementById('bar').style.width='10%';document.getElementById('result').innerHTML='';
+  document.getElementById('log').innerHTML=''}
+function showResult(d){
+  const r=d.result;if(!r)return;
+  if(r.error){document.getElementById('result').innerHTML=`<span style="color:var(--err)">✗ ${esc(r.error)}</span>`;return}
+  if(r.skipped){document.getElementById('result').innerHTML=`<span style="color:var(--t2)">⊘ 跳过：${esc(r.reason||'重复')}</span>`;return}
+  const stars='★'.repeat(r.importance||3)+'☆'.repeat(5-(r.importance||3));
+  document.getElementById('result').innerHTML=`
+    <div style="font-weight:500;margin-bottom:5px">${esc(r.title||'')}</div>
+    <div style="font-size:12px;margin-bottom:6px"><span class="badge b-info">${esc(r.category||'')}</span>
+    <span class="stars" style="margin-left:8px">${stars}</span></div>
+    <div style="font-size:13px;color:var(--t2)">${esc(r.conclusion||'')}</div>
+    <div style="margin-top:8px">${(r.keywords||[]).map(k=>`<span class="tag">${esc(k)}</span>`).join('')}</div>`}
+async function submitUrl(){
+  const url=document.getElementById('url-in').value.trim();if(!url){alert('请输入URL');return}
+  showProg();const d=await api('/api/process-url',{url});if(d.error){document.getElementById('stat').textContent='✗ '+d.error;return}
+  pollJob(d.job_id,document.getElementById('log'),document.getElementById('bar'),document.getElementById('stat'),showResult)}
+async function submitText(){
+  const text=document.getElementById('t-body').value.trim();if(!text){alert('请输入内容');return}
+  showProg();const d=await api('/api/process-text',{text,title:document.getElementById('t-title').value.trim(),source:document.getElementById('t-src').value.trim(),url:document.getElementById('t-url').value.trim()});
+  if(d.error){document.getElementById('stat').textContent='✗ '+d.error;return}
+  pollJob(d.job_id,document.getElementById('log'),document.getElementById('bar'),document.getElementById('stat'),showResult)}
+</script>{% endblock %}

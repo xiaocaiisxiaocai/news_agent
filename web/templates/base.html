@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}资讯 Agent{% endblock %}</title>
+<style>
+:root{--bg:#f5f5f2;--s:#fff;--b:rgba(0,0,0,.08);--t:#111;--t2:#555;--t3:#999;
+--pr:#c96442;--ok:#1d9e75;--warn:#b87a14;--err:#c44545;--info:#1a6fb8;--r:8px;--rl:12px}
+@media(prefers-color-scheme:dark){:root{--bg:#141413;--s:#1f1f1d;--b:rgba(255,255,255,.1);--t:#f0f0ee;--t2:#a0a09a;--t3:#666}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:14px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;background:var(--bg);color:var(--t)}
+nav{background:var(--s);border-bottom:.5px solid var(--b);padding:10px 20px;display:flex;align-items:center;gap:3px;position:sticky;top:0;z-index:99}
+.brand{font-size:15px;font-weight:500;margin-right:14px;color:var(--t);white-space:nowrap}
+nav a{color:var(--t2);text-decoration:none;padding:5px 10px;border-radius:var(--r);font-size:13px;transition:background .12s}
+nav a:hover,nav a.on{background:rgba(0,0,0,.06);color:var(--t)}
+@media(prefers-color-scheme:dark){nav a:hover,nav a.on{background:rgba(255,255,255,.08)}}
+main{max-width:1100px;margin:0 auto;padding:28px 20px}
+h1{font-size:21px;font-weight:500;margin-bottom:4px}h2{font-size:16px;font-weight:500;margin-bottom:14px}h3{font-size:14px;font-weight:500;margin-bottom:8px}
+.sub{color:var(--t2);font-size:12px;margin-bottom:22px}
+.card{background:var(--s);border:.5px solid var(--b);border-radius:var(--rl);padding:18px 20px;margin-bottom:14px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}.grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+@media(max-width:680px){.grid2{grid-template-columns:1fr}}
+.stat{background:var(--s);border:.5px solid var(--b);border-radius:var(--r);padding:13px 15px}
+.stat-l{font-size:12px;color:var(--t2);margin-bottom:3px}.stat-v{font-size:22px;font-weight:500}.stat-m{font-size:11px;color:var(--t3);margin-top:3px}
+input,textarea,select{width:100%;padding:7px 11px;border:.5px solid var(--b);border-radius:var(--r);background:var(--s);color:var(--t);font:inherit;font-size:13px;outline:none;transition:border-color .15s}
+input:focus,textarea:focus,select:focus{border-color:var(--pr);box-shadow:0 0 0 3px rgba(201,100,66,.12)}
+textarea{resize:vertical;min-height:88px;line-height:1.6}label{display:block;font-size:12px;color:var(--t2);margin-bottom:5px}.field{margin-bottom:12px}
+button,.btn{padding:7px 13px;border:.5px solid var(--b);border-radius:var(--r);background:var(--s);color:var(--t);font:inherit;font-size:13px;cursor:pointer;transition:all .12s;white-space:nowrap}
+button:hover,.btn:hover{background:rgba(0,0,0,.05)}@media(prefers-color-scheme:dark){button:hover,.btn:hover{background:rgba(255,255,255,.07)}}
+button:active{transform:scale(.98)}button:disabled{opacity:.45;cursor:not-allowed}
+.btn-p{background:var(--pr);color:#fff;border-color:var(--pr)}.btn-p:hover{opacity:.88;background:var(--pr)}
+.btn-ok{color:var(--ok);border-color:var(--ok)}.btn-err{color:var(--err);border-color:var(--err)}.btn-sm{padding:4px 9px;font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:9px 11px;border-bottom:.5px solid var(--b)}th{font-size:11px;color:var(--t2);font-weight:500}
+.badge{display:inline-block;padding:2px 7px;font-size:11px;border-radius:10px;background:rgba(0,0,0,.05);color:var(--t2)}
+@media(prefers-color-scheme:dark){.badge{background:rgba(255,255,255,.08)}}
+.b-ok{background:rgba(29,158,117,.12);color:var(--ok)}.b-warn{background:rgba(184,122,20,.12);color:var(--warn)}.b-err{background:rgba(196,69,69,.12);color:var(--err)}.b-info{background:rgba(26,111,184,.12);color:var(--info)}
+.stars{color:var(--warn)}.stars-d{color:var(--t3)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.row>*{flex:1;min-width:0}.shrink{flex:0 0 auto!important}
+.log-box{background:var(--bg);border:.5px solid var(--b);border-radius:var(--r);padding:10px 13px;font:12px/1.7 ui-monospace,monospace;max-height:260px;overflow-y:auto;display:none}
+.log-box.on{display:block}.pbar{height:3px;background:rgba(0,0,0,.06);border-radius:2px;overflow:hidden;margin-bottom:10px}
+@media(prefers-color-scheme:dark){.pbar{background:rgba(255,255,255,.08)}}.pbar-f{height:100%;background:var(--pr);transition:width .3s;width:0}
+.log-t{color:var(--t3);margin-right:7px}a{color:var(--info);text-decoration:none}a:hover{text-decoration:underline}
+.empty{color:var(--t3);text-align:center;padding:28px 0;font-size:13px}.tag{display:inline-block;padding:2px 6px;font-size:11px;border-radius:4px;margin:1px;background:rgba(0,0,0,.04);color:var(--t2)}
+@media(prefers-color-scheme:dark){.tag{background:rgba(255,255,255,.07)}}
+.flash{padding:9px 13px;border-radius:var(--r);font-size:13px;margin-bottom:12px;display:none}.flash.on{display:block}
+.flash-ok{background:rgba(29,158,117,.1);color:var(--ok)}.flash-err{background:rgba(196,69,69,.1);color:var(--err)}
+.sep{height:.5px;background:var(--b);margin:16px 0}.mono{font-family:ui-monospace,monospace;font-size:12px}
+</style>
+</head>
+<body>
+<nav>
+  <span class="brand">资讯 Agent</span>
+  <a href="/" class="{{ 'on' if request.path=='/' else '' }}">仪表盘</a>
+  <a href="/process" class="{{ 'on' if request.path=='/process' else '' }}">处理</a>
+  <a href="/articles" class="{{ 'on' if '/articles' in request.path else '' }}">文章</a>
+  <a href="/rss" class="{{ 'on' if request.path=='/rss' else '' }}">RSS</a>
+  <a href="/topics" class="{{ 'on' if request.path=='/topics' else '' }}">趋势</a>
+  <a href="/quality" class="{{ 'on' if request.path=='/quality' else '' }}">质量</a>
+  <a href="/briefs" class="{{ 'on' if request.path=='/briefs' else '' }}">简报</a>
+  <a href="/settings" class="{{ 'on' if request.path=='/settings' else '' }}">设置</a>
+</nav>
+<main>{% block content %}{% endblock %}</main>
+<script>
+function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+async function api(url,data){const r=await fetch(url,data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});return r.json()}
+function flash(el,msg,ok=true){el.className='flash on '+(ok?'flash-ok':'flash-err');el.textContent=msg;setTimeout(()=>el.classList.remove('on'),3500)}
+function pollJob(jid,logEl,barEl,statEl,cb){
+  const iv=setInterval(async()=>{
+    const d=await api('/api/job/'+jid);if(!d||d.error){clearInterval(iv);return}
+    if(barEl)barEl.style.width=(d.total>0?Math.round(d.progress*100/d.total):50)+'%';
+    if(logEl){logEl.classList.add('on');logEl.innerHTML=d.logs.map(l=>`<div><span class="log-t">${l.t}</span>${esc(l.m)}</div>`).join('');logEl.scrollTop=logEl.scrollHeight}
+    if(statEl)statEl.textContent=d.status==='running'?`处理中 ${d.progress}/${d.total}`:(d.status==='done'?'完成':'出错');
+    if(d.status==='done'||d.status==='error'){clearInterval(iv);if(barEl)barEl.style.width='100%';cb&&cb(d)}
+  },900)}
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

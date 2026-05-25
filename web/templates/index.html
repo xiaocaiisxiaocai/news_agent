@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}仪表盘{% endblock %}
+{% block content %}
+<h1>仪表盘</h1><p class="sub">最近 7 天概况</p>
+<div class="grid4" style="margin-bottom:16px">
+  <div class="stat"><div class="stat-l">总入库</div><div class="stat-v">{{stats.total}}</div><div class="stat-m">最近7天</div></div>
+  <div class="stat"><div class="stat-l">缓存命中</div><div class="stat-v">{{cs.total_hits}}</div><div class="stat-m">节省API调用</div></div>
+  <div class="stat"><div class="stat-l">缓存条目</div><div class="stat-v">{{cs.total_entries}}</div><div class="stat-m">已存储</div></div>
+  <div class="stat"><div class="stat-l">当前LLM</div><div class="stat-v" style="font-size:15px">{{llm}}</div><div class="stat-m"><a href="/settings">切换</a></div></div>
+</div>
+<div class="card">
+  <h2>快捷操作</h2>
+  <div class="row">
+    <button class="btn-p shrink" onclick="runTask('/api/run-rss')">拉取所有 RSS</button>
+    <button class="shrink" onclick="runTask('/api/run-email')">拉取邮件</button>
+    <button class="shrink" onclick="runTask('/api/run-brief')">生成今日简报</button>
+    <button class="shrink btn-err" onclick="clearCache()">清理缓存</button>
+  </div>
+  <div id="stat-txt" style="margin-top:8px;font-size:12px;color:var(--t2)"></div>
+  <div class="pbar" style="margin-top:10px"><div class="pbar-f" id="bar"></div></div>
+  <div class="log-box" id="log"></div>
+</div>
+<div class="grid2">
+  <div class="card"><h2>分类分布</h2>
+    {% if stats.by_category %}
+    <table>{% for k,v in stats.by_category.items() %}
+    <tr><td>{{k}}</td><td style="text-align:right;color:var(--t2)">{{v}}</td>
+    <td style="width:45%"><div style="height:5px;background:rgba(0,0,0,.05);border-radius:2px">
+    <div style="height:100%;width:{{(v*100//stats.total) if stats.total else 0}}%;background:var(--pr)"></div></div></td></tr>
+    {% endfor %}</table>
+    {% else %}<div class="empty">暂无数据</div>{% endif %}
+  </div>
+  <div class="card"><h2>重要性分布</h2>
+    {% if stats.importance %}
+    <table>{% for s in ['5','4','3','2','1'] %}{% set v=stats.importance.get(s,0) %}
+    <tr><td><span class="stars">{{'★'*(s|int)}}</span><span class="stars-d">{{'☆'*(5-s|int)}}</span></td>
+    <td style="text-align:right;color:var(--t2)">{{v}}</td>
+    <td style="width:45%"><div style="height:5px;background:rgba(0,0,0,.05);border-radius:2px">
+    <div style="height:100%;width:{{(v*100//stats.total) if stats.total else 0}}%;background:var(--warn)"></div></div></td></tr>
+    {% endfor %}</table>
+    {% else %}<div class="empty">暂无数据</div>{% endif %}
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script>
+async function runTask(url){
+  const bar=document.getElementById('bar'),log=document.getElementById('log'),st=document.getElementById('stat-txt');
+  bar.style.width='5%';log.classList.add('on');log.innerHTML='';st.textContent='启动中...';
+  const d=await api(url,{});
+  if(d.error){st.textContent='✗ '+d.error;return}
+  pollJob(d.job_id,log,bar,st,r=>{if(r.result&&r.result.error)st.textContent='✗ '+r.result.error})
+}
+async function clearCache(){
+  if(!confirm('清理30天前的缓存？'))return;
+  const d=await api('/api/cache-clear',{days:30});
+  alert('已清理 '+d.cleared+' 条');location.reload()}
+</script>{% endblock %}
