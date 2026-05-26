@@ -82,6 +82,130 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("/briefs/brief-2026-05-25.md", html)
         self.assertIn("/briefs/brief-2026-05-25.html", html)
 
+    def test_smart_brief_markdown_groups_articles_and_includes_recommendation_reason(self):
+        from outputs import brief
+
+        self.save_article("GPT 推理升级", "https://example.com/ai-brief", "科技/AI", 5, "模型推理能力提升")
+        self.save_article("企业并购观察", "https://example.com/biz-brief", "商业", 4, "并购交易带来行业整合")
+        self.save_article("论文检索新方法", "https://example.com/paper-brief", "学术", 4, "检索增强论文发布")
+        articles = {a["title"]: a for a in storage.get_articles(days=1, limit=10)}
+        storage.record_article_event(articles["GPT 推理升级"]["id"], "favorite")
+
+        md = brief.generate()
+
+        self.assertIn("## 今日重点", md)
+        self.assertIn("## AI/科技", md)
+        self.assertIn("## 商业动态", md)
+        self.assertIn("## 学术论文", md)
+        self.assertIn("推荐理由", md)
+        self.assertIn("推荐质量", md)
+        self.assertIn("基础分", md)
+        self.assertIn("反馈分", md)
+        self.assertIn("记忆分", md)
+
+    def test_smart_brief_html_groups_articles_and_includes_score_explanations(self):
+        from outputs import brief
+
+        self.save_article("AI 研究快讯", "https://example.com/ai-html-brief", "科技/AI", 5, "AI 研究摘要")
+        self.save_article("商业模式更新", "https://example.com/biz-html-brief", "商业", 4, "商业摘要")
+        self.save_article("学术数据集", "https://example.com/academic-html-brief", "学术", 4, "学术摘要")
+
+        html = brief.generate_html()
+
+        self.assertIn("今日重点", html)
+        self.assertIn("AI/科技", html)
+        self.assertIn("商业动态", html)
+        self.assertIn("学术论文", html)
+        self.assertIn("推荐理由", html)
+        self.assertIn("推荐质量", html)
+        self.assertIn("基础分", html)
+        self.assertIn("推荐分", html)
+
+    def test_briefs_page_shows_preview_copy_and_channel_send_controls(self):
+        briefs = Path(webapp._BRIEFS_DIR)
+        briefs.mkdir(parents=True, exist_ok=True)
+        (briefs / "brief-2026-05-25.md").write_text("# Markdown 简报\n", encoding="utf-8")
+        (briefs / "brief-2026-05-25.html").write_text("<!doctype html><h1>HTML 简报</h1>", encoding="utf-8")
+        storage.save_notification_channel({
+            "name": "简报 Webhook",
+            "channel_type": "webhook",
+            "target": "https://example.com/hook",
+            "enabled": True,
+        })
+
+        resp = self.client.get("/briefs")
+        html = resp.get_data(as_text=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Markdown 预览", html)
+        self.assertIn("HTML 预览", html)
+        self.assertIn("复制 Markdown", html)
+        self.assertIn("复制 HTML", html)
+        self.assertIn("md-full-1", html)
+        self.assertIn("html-full-1", html)
+        self.assertIn("推送简报", html)
+        self.assertIn("简报 Webhook", html)
+        self.assertIn("/api/briefs/send", html)
+
+    def test_brief_send_api_sends_existing_brief_to_enabled_webhook_channel(self):
+        briefs = Path(webapp._BRIEFS_DIR)
+        briefs.mkdir(parents=True, exist_ok=True)
+        (briefs / "brief-2026-05-25.md").write_text("# 简报\n\n今日重点", encoding="utf-8")
+        channel_id = storage.save_notification_channel({
+            "name": "简报 Webhook",
+            "channel_type": "webhook",
+            "target": "https://example.com/hook",
+            "enabled": True,
+        })
+
+        with patch("web.app.requests.post") as post:
+            post.return_value.status_code = 200
+            post.return_value.text = "ok"
+            resp = self.client.post("/api/briefs/send", json={
+                "channel_id": channel_id,
+                "filename": "brief-2026-05-25.md",
+            })
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["ok"])
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["type"], "brief")
+        self.assertEqual(payload["filename"], "brief-2026-05-25.md")
+        self.assertIn("今日重点", payload["content"])
+        logs = storage.get_notification_logs(channel_id=channel_id)
+        self.assertEqual(logs[0]["status"], "ok")
+        self.assertIn("brief-2026-05-25.md", logs[0]["payload"])
+
+    def test_brief_send_api_requires_access_token_when_enabled(self):
+        cfg.set_many({
+            "web.access_token.enabled": "true",
+            "web.access_token": "secret-token",
+        })
+        briefs = Path(webapp._BRIEFS_DIR)
+        briefs.mkdir(parents=True, exist_ok=True)
+        (briefs / "brief-2026-05-25.md").write_text("# 简报", encoding="utf-8")
+        channel_id = storage.save_notification_channel({
+            "name": "受保护简报 Webhook",
+            "channel_type": "webhook",
+            "target": "https://example.com/hook",
+            "enabled": True,
+        })
+
+        blocked = self.client.post("/api/briefs/send", json={
+            "channel_id": channel_id,
+            "filename": "brief-2026-05-25.md",
+        })
+        with patch("web.app.requests.post") as post:
+            post.return_value.status_code = 200
+            post.return_value.text = "ok"
+            allowed = self.client.post("/api/briefs/send", json={
+                "channel_id": channel_id,
+                "filename": "brief-2026-05-25.md",
+            }, headers={"X-Access-Token": "secret-token"})
+
+        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(allowed.status_code, 200)
+
     def test_article_page_total_uses_current_filters(self):
         self.save_article("AI A", "https://example.com/a", "科技/AI", 5, "AI news")
         self.save_article("Biz B", "https://example.com/b", "商业", 3, "Biz news")

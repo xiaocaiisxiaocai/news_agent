@@ -120,7 +120,7 @@ def _run_brief_job(jid, fmt="md"):
     try:
         job_log(jid, "生成简报...")
         content = gen_brief_html() if fmt == "html" else gen_brief()
-        path = save_brief(content, fmt=fmt)
+        path = save_brief(content, fmt=fmt, output_dir=_BRIEFS_DIR)
         job_log(jid, f"✓ 已保存：{path}")
         job_done(jid, {"path": path, "content": content, "format": fmt})
     except Exception as e:
@@ -393,6 +393,71 @@ def send_recommended_notifications(limit: int = 5, days: int = 1,
     }
 
 
+def _brief_file_path(filename: str) -> Path | None:
+    """只允许发送简报目录内的固定命名文件。"""
+    if not re.match(r"^brief-\d{4}-\d{2}-\d{2}\.(md|html)$", str(filename or "")):
+        return None
+    briefs_path = Path(_BRIEFS_DIR).resolve()
+    target = (briefs_path / filename).resolve()
+    if not str(target).startswith(str(briefs_path)) or not target.is_file():
+        return None
+    return target
+
+
+def send_brief_notification(channel_id: int, filename: str) -> dict:
+    channel = get_notification_channel(channel_id)
+    target = _brief_file_path(filename)
+    if not channel:
+        return {"ok": False, "error": "通知渠道不存在"}
+    if not channel.get("enabled"):
+        return {"ok": False, "error": "通知渠道已停用"}
+    if not target:
+        return {"ok": False, "error": "简报文件不存在"}
+
+    content = target.read_text(encoding="utf-8")
+    fmt = target.suffix.lstrip(".")
+    date_str = target.stem.replace("brief-", "")
+    title = f"资讯简报 {date_str}"
+    payload = {
+        "type": "brief",
+        "title": title,
+        "format": fmt,
+        "filename": target.name,
+        "content": content,
+    }
+    payload_text = json.dumps({"type": "brief", "filename": target.name, "title": title}, ensure_ascii=False)
+    try:
+        if channel["channel_type"] == "webhook":
+            resp = requests.post(channel["target"], json=payload, timeout=15)
+            if resp.status_code >= 400:
+                raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+        elif channel["channel_type"] == "email":
+            missing = _email_smtp_missing()
+            if missing:
+                raise RuntimeError("SMTP 配置不完整：" + "、".join(missing))
+            msg = EmailMessage()
+            sender = cfg.get("notify.email.from") or cfg.get("notify.email.username")
+            msg["From"] = sender
+            msg["To"] = channel["target"]
+            msg["Subject"] = title[:160]
+            msg.set_content(content, subtype=("html" if fmt == "html" else "plain"), charset="utf-8")
+            server = cfg.get("notify.email.smtp_server")
+            port = cfg.get_int("notify.email.smtp_port", 465)
+            username = cfg.get("notify.email.username")
+            password = cfg.get("notify.email.password")
+            with smtplib.SMTP_SSL(server, port, timeout=15) as smtp:
+                if username:
+                    smtp.login(username, password)
+                smtp.send_message(msg)
+        else:
+            raise RuntimeError("通知渠道仅支持 email 或 webhook")
+        record_notification_log(channel_id, None, "ok", payload_text)
+        return {"ok": True}
+    except Exception as e:
+        record_notification_log(channel_id, None, "error", payload_text, str(e))
+        return {"ok": False, "error": str(e)}
+
+
 def classify_rss_error(error: str = "", status: str = "") -> str:
     """把底层错误归类为页面可读原因。"""
     err = (error or "").lower()
@@ -591,12 +656,14 @@ def briefs_page():
                 content = f.read_text(encoding="utf-8")
             except Exception:
                 continue
-            item = brief_map.setdefault(date_str, {"date": date_str, "files": {}, "content": ""})
+            item = brief_map.setdefault(date_str, {"date": date_str, "files": {}, "contents": {}, "content": ""})
             item["files"][fmt] = name
+            item["contents"][fmt] = content
             if fmt == "md" or not item["content"]:
                 item["content"] = content
     briefs = sorted(brief_map.values(), key=lambda b: b["date"], reverse=True)[:30]
-    return render_template("briefs.html", briefs=briefs)
+    return render_template("briefs.html", briefs=briefs,
+                           channels=get_notification_channels(enabled_only=True))
 
 
 @app.route("/notifications")
@@ -1015,6 +1082,16 @@ def api_notification_send():
         return denied
     data = request.json or {}
     result = send_article_notification(data.get("channel_id"), data.get("article_id"))
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/briefs/send", methods=["POST"])
+def api_brief_send():
+    denied = _require_access_token()
+    if denied:
+        return denied
+    data = request.json or {}
+    result = send_brief_notification(data.get("channel_id"), data.get("filename"))
     return jsonify(result), (200 if result.get("ok") else 400)
 
 

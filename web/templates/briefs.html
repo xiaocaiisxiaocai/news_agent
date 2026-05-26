@@ -16,7 +16,54 @@
       {% if b.files.get('html') %}<a href="/briefs/{{b.files.get('html')}}" download class="btn btn-sm">下载 HTML</a>{% endif %}
     </div>
   </div>
-  <pre style="font:13px/1.8 inherit;white-space:pre-wrap;color:var(--t2)">{{b.content[:1000]}}{% if b.content|length>1000 %}...{% endif %}</pre>
+  <div class="row" style="align-items:flex-end;margin-bottom:12px">
+    {% if channels %}
+    <div class="field">
+      <label>推送渠道</label>
+      <select id="brief-channel-{{loop.index}}">
+        {% for c in channels %}
+        <option value="{{c.id}}">{{c.name}} · {{c.channel_type}}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field shrink">
+      <label>简报格式</label>
+      <select id="brief-file-{{loop.index}}" style="min-width:150px">
+        {% if b.files.get('md') %}<option value="{{b.files.get('md')}}">Markdown</option>{% endif %}
+        {% if b.files.get('html') %}<option value="{{b.files.get('html')}}">HTML</option>{% endif %}
+      </select>
+    </div>
+    <button class="btn-p shrink" onclick="sendBrief({{loop.index}})">推送简报</button>
+    {% else %}
+    <div class="badge b-warn">未配置启用渠道，先到通知页添加渠道</div>
+    {% endif %}
+  </div>
+  <div class="grid2">
+    <div>
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h3 style="margin:0">Markdown 预览</h3>
+        {% if b.contents.get('md') %}<button class="btn-sm shrink" onclick="copyBrief('md-full-{{loop.index}}')">复制 Markdown</button>{% endif %}
+      </div>
+      {% if b.contents.get('md') %}
+      <textarea id="md-full-{{loop.index}}" style="display:none">{{b.contents.get('md')}}</textarea>
+      <pre id="md-{{loop.index}}" style="font:13px/1.8 inherit;white-space:pre-wrap;color:var(--t2);max-height:360px;overflow:auto">{{b.contents.get('md')[:3000]}}{% if b.contents.get('md')|length>3000 %}...{% endif %}</pre>
+      {% else %}
+      <div class="empty">暂无 Markdown 文件</div>
+      {% endif %}
+    </div>
+    <div>
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h3 style="margin:0">HTML 预览</h3>
+        {% if b.contents.get('html') %}<button class="btn-sm shrink" onclick="copyBrief('html-full-{{loop.index}}')">复制 HTML</button>{% endif %}
+      </div>
+      {% if b.contents.get('html') %}
+      <textarea id="html-full-{{loop.index}}" style="display:none">{{b.contents.get('html')}}</textarea>
+      <pre id="html-{{loop.index}}" style="font:13px/1.8 inherit;white-space:pre-wrap;color:var(--t2);max-height:360px;overflow:auto">{{b.contents.get('html')[:3000]}}{% if b.contents.get('html')|length>3000 %}...{% endif %}</pre>
+      {% else %}
+      <div class="empty">暂无 HTML 文件</div>
+      {% endif %}
+    </div>
+  </div>
 </div>{% endfor %}
 {% else %}<div class="empty">还没有简报，点"生成今日简报"</div>{% endif %}
 {% endblock %}
@@ -28,4 +75,18 @@ async function genBrief(fmt='md'){
     if(j.status==='done'){clearInterval(iv);location.reload()}
     else if(j.status==='error'){clearInterval(iv);flash(document.getElementById('flash'),j.result.error,false)}
   },1000)}
+async function copyBrief(id){
+  const el=document.getElementById(id);
+  if(!el)return;
+  await navigator.clipboard.writeText(el.value || el.innerText);
+  flash(document.getElementById('flash'),'已复制到剪贴板');
+}
+async function sendBrief(idx){
+  const channel=document.getElementById('brief-channel-'+idx);
+  const file=document.getElementById('brief-file-'+idx);
+  if(!channel||!file){return}
+  const d=await api('/api/briefs/send',{channel_id:channel.value,filename:file.value});
+  if(d.ok)flash(document.getElementById('flash'),'简报已推送');
+  else flash(document.getElementById('flash'),d.error||'推送失败',false);
+}
 </script>{% endblock %}
