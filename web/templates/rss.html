@@ -75,6 +75,22 @@
   </tbody></table>
   {% else %}<div class="empty">尚未拉取过，点"立即拉取"开始</div>{% endif %}
 </div>
+<div class="card"><h2>源质量</h2>
+  {% if qmap %}
+  <table><thead><tr><th>来源</th><th>质量分</th><th>诊断</th><th>建议</th><th>近 7 天文章</th><th>平均重要性</th></tr></thead><tbody>
+  {% for s in sources if s.enabled %}{% set q=qmap.get(s.url,{}) %}
+  <tr>
+    <td>{{s.name}}</td>
+    <td><span class="badge {% if q.get('quality_score',0) >= 75 %}b-ok{% elif q.get('quality_score',0) >= 50 %}b-warn{% else %}b-err{% endif %}">{{q.get('quality_score','—')}}</span></td>
+    <td>{{q.get('diagnosis','未知')}}</td>
+    <td>{{q.get('suggestion','建议先测试')}}</td>
+    <td>{{q.get('recent_article_count',0)}}</td>
+    <td>{{q.get('avg_importance',0)}}</td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+  {% else %}<div class="empty">暂无质量数据，测试或拉取 RSS 后生成</div>{% endif %}
+</div>
 {% endblock %}
 {% block scripts %}<script>
 let sources = {{ sources|tojson }};

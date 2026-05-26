@@ -21,6 +21,7 @@ import config_store as cfg
 from storage import (
     init_db, get_stats, get_articles, get_article, save_article,
     get_eval_stats, get_rss_health, get_active_topics, record_rss_fetch,
+    get_rss_quality_scores,
     count_articles, cache_stats, cache_clear, record_article_event,
     get_recommended_articles, get_article_event_counts, find_similar_articles,
     explain_article_recommendation, get_preference_profile,
@@ -536,9 +537,11 @@ def rss_page():
     feeds   = [s["url"] for s in sources if s.get("enabled", True)]
     health  = get_rss_health()
     hmap    = {h["feed_url"]: h for h in health}
+    quality = get_rss_quality_scores(days=7)
+    qmap    = {q["feed_url"]: q for q in quality}
     max_per = cfg.get_int("rss.max_per_feed", 5)
     categories = ["科技/AI", "商业", "学术", "即刻", "B站", "其他"]
-    return render_template("rss.html", sources=sources, feeds=feeds, hmap=hmap,
+    return render_template("rss.html", sources=sources, feeds=feeds, hmap=hmap, qmap=qmap,
                            max_per=max_per, categories=categories,
                            classify_rss_error=classify_rss_error)
 

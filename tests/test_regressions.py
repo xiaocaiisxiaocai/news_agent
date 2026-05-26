@@ -1458,6 +1458,55 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("失败原因", html)
         self.assertIn("连接超时", html)
 
+    def test_rss_quality_scores_include_success_rate_and_suggestion(self):
+        cfg.set_rss_sources([
+            {"name": "稳定源", "url": "https://example.com/stable.xml", "category": "科技/AI", "enabled": True},
+            {"name": "坏源", "url": "https://example.com/bad.xml", "category": "其他", "enabled": True},
+        ])
+        storage.record_rss_fetch("https://example.com/stable.xml", True, item_count=5)
+        storage.record_rss_fetch("https://example.com/bad.xml", False, error="返回 HTML，非 RSS/Atom 内容")
+        storage.record_rss_fetch("https://example.com/bad.xml", False, error="返回 HTML，非 RSS/Atom 内容")
+
+        quality = {q["feed_url"]: q for q in storage.get_rss_quality_scores(days=7)}
+
+        self.assertGreaterEqual(quality["https://example.com/stable.xml"]["quality_score"], 80)
+        self.assertEqual(quality["https://example.com/stable.xml"]["diagnosis"], "正常")
+        self.assertLess(quality["https://example.com/bad.xml"]["quality_score"], 60)
+        self.assertEqual(quality["https://example.com/bad.xml"]["diagnosis"], "格式错误")
+        self.assertIn("停用", quality["https://example.com/bad.xml"]["suggestion"])
+
+    def test_rss_page_shows_quality_score_diagnosis_and_suggestion(self):
+        cfg.set_rss_sources([
+            {"name": "坏源", "url": "https://example.com/bad.xml", "category": "其他", "enabled": True},
+        ])
+        storage.record_rss_fetch("https://example.com/bad.xml", False, error="RSS 解析失败：bad")
+        storage.record_rss_fetch("https://example.com/bad.xml", False, error="RSS 解析失败：bad")
+
+        resp = self.client.get("/rss")
+        html = resp.get_data(as_text=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("源质量", html)
+        self.assertIn("质量分", html)
+        self.assertIn("诊断", html)
+        self.assertIn("建议", html)
+
+    def test_fetch_all_rss_skips_low_quality_sources_by_default(self):
+        cfg.set_rss_sources([
+            {"name": "稳定源", "url": "https://example.com/stable.xml", "category": "科技/AI", "enabled": True},
+            {"name": "坏源", "url": "https://example.com/bad.xml", "category": "其他", "enabled": True},
+        ])
+        storage.record_rss_fetch("https://example.com/bad.xml", False, error="Connection timed out")
+        storage.record_rss_fetch("https://example.com/bad.xml", False, error="Connection timed out")
+        storage.record_rss_fetch("https://example.com/bad.xml", False, error="Connection timed out")
+
+        with patch("fetchers.fetch.fetch_rss_feed", return_value=[{"title": "A", "text": "正文", "url": "u"}]) as fetch:
+            articles = webapp.fetch_all_rss()
+
+        called_urls = [call.args[0] for call in fetch.call_args_list]
+        self.assertIn("https://example.com/stable.xml", called_urls)
+        self.assertNotIn("https://example.com/bad.xml", called_urls)
+        self.assertEqual(len(articles), 1)
 
     def test_fetch_rss_feed_records_html_response_reason(self):
         class Resp:

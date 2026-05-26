@@ -781,6 +781,79 @@ def get_rss_health() -> list:
     return [dict(r) for r in rows]
 
 
+def classify_rss_quality_error(error: str = "", status: str = "") -> str:
+    text = (error or "").lower()
+    if status == "ok" and not text:
+        return "正常"
+    if "timeout" in text or "timed out" in text or "超时" in text:
+        return "网络超时"
+    if "html" in text or "非 rss" in text or "非 rss/atom" in text:
+        return "格式错误"
+    if "解析失败" in text or "parse" in text or "bozo" in text:
+        return "格式错误"
+    if "未包含文章" in text or "no entries" in text or "没有文章" in text:
+        return "无文章"
+    if "http 404" in text or "http 403" in text or "http 5" in text:
+        return "HTTP 错误"
+    if error:
+        return "其他错误"
+    return "未知"
+
+
+def get_rss_quality_scores(days: int = 7) -> list:
+    with _conn() as c:
+        rows = c.execute("""
+            SELECT h.*,
+                   COALESCE(a.article_count, 0) AS recent_article_count,
+                   COALESCE(a.avg_importance, 0) AS avg_importance
+            FROM rss_health h
+            LEFT JOIN (
+                SELECT source, COUNT(*) AS article_count, ROUND(AVG(importance), 2) AS avg_importance
+                FROM articles
+                WHERE date(created_at) >= date('now', ?)
+                GROUP BY source
+            ) a ON a.source = h.feed_url
+               OR a.source = replace(replace(h.feed_url, 'https://', ''), 'http://', '')
+        """, (f"-{int(days)} days",)).fetchall()
+    scores = []
+    for row in rows:
+        item = dict(row)
+        failures = int(item.get("consecutive_failures") or 0)
+        total_items = int(item.get("total_items_fetched") or 0)
+        diagnosis = classify_rss_quality_error(item.get("last_error", ""), item.get("status", ""))
+        score = 100
+        if item.get("status") == "warning":
+            score -= 35
+        elif item.get("status") == "dead":
+            score -= 60
+        elif item.get("status") not in ("ok", "warning", "dead"):
+            score -= 20
+        score -= min(failures * 12, 48)
+        if diagnosis in ("格式错误", "HTTP 错误"):
+            score -= 15
+        elif diagnosis in ("网络超时", "无文章"):
+            score -= 10
+        if total_items == 0 and item.get("status") != "ok":
+            score -= 10
+        score = max(0, min(100, score))
+        if score < 50 or item.get("status") == "dead":
+            suggestion = "建议停用或替换源"
+        elif score < 75:
+            suggestion = "建议观察，必要时降低优先级"
+        else:
+            suggestion = "可正常使用"
+        item.update({
+            "quality_score": score,
+            "diagnosis": diagnosis,
+            "suggestion": suggestion,
+            "recent_article_count": int(item.get("recent_article_count") or 0),
+            "avg_importance": float(item.get("avg_importance") or 0),
+        })
+        scores.append(item)
+    scores.sort(key=lambda x: (x["quality_score"], -int(x.get("consecutive_failures") or 0)))
+    return scores
+
+
 # ── LLM 缓存 ─────────────────────────────────────────────
 
 def cache_get(key: str, max_age_days: int | None = None) -> str | None:

@@ -11,7 +11,7 @@ except ImportError:
     HAS_READABILITY = False
 
 import config_store as cfg
-from storage import record_rss_fetch
+from storage import record_rss_fetch, get_rss_quality_scores
 
 logger = logging.getLogger("fetcher")
 
@@ -329,10 +329,15 @@ def fetch_rss_feed(feed_url: str, max_items: int = 5) -> list:
 def fetch_all_rss() -> list:
     """读 config_store 里的 RSS 源列表，批量拉取"""
     sources = cfg.get_rss_sources(enabled_only=True)
+    quality = {q["feed_url"]: q for q in get_rss_quality_scores(days=7)}
     max_per = cfg.get_int("rss.max_per_feed", 5)
     all_articles = []
     for source in sources:
         url = source["url"]
+        q = quality.get(url)
+        if q and q.get("quality_score", 100) < 50:
+            print(f"  ↷ RSS {source.get('name','RSS')} {url[:60]} 已跳过（源质量 {q.get('quality_score')}）")
+            continue
         arts = fetch_rss_feed(url, max_items=max_per)
         for art in arts:
             art.setdefault("source", source.get("name", "RSS"))
