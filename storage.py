@@ -514,7 +514,7 @@ def get_preference_profile(days: int = 30, limit: int = 12) -> dict:
         categories[category] = categories.get(category, 0) + weight
 
     def top_items(items: dict[str, float]) -> list[dict]:
-        ranked = sorted(items.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)[:int(limit)]
+        ranked = sorted(items.items(), key=lambda kv: (-kv[1], kv[0]))[:int(limit)]
         return [{"term": term, "score": round(score, 2)} for term, score in ranked]
 
     return {

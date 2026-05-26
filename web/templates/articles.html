@@ -36,13 +36,14 @@
         <span class="stars">{{'★'*a.importance}}</span><span class="stars-d">{{'☆'*(5-a.importance)}}</span>
         <span style="margin:0 5px">·</span>{{a.created_at[:10]}}
         {% if a.recommend_score is defined %}<span style="margin:0 5px">·</span>推荐分 {{a.recommend_score}}{% endif %}
-        {% if a.memory_score is defined %}<span style="margin:0 5px">·</span>记忆分 {{a.memory_score}}{% endif %}
+      {% if a.memory_score is defined %}<span style="margin:0 5px">·</span>记忆分 {{a.memory_score}}{% endif %}
         {% if a.language=='英文' %}<span class="badge" style="margin-left:5px">EN</span>{% endif %}
       </div>
       {% if a.recommend_reason is defined %}<div style="font-size:12px;color:var(--t2);margin-top:4px">推荐理由：{{a.recommend_reason}}</div>{% endif %}
       {% if a.keywords %}<div style="margin-top:5px">{% for k in a.keywords %}<span class="tag">{{k}}</span>{% endfor %}</div>{% endif %}
     </div>
     <div class="row shrink" style="gap:6px">
+      {% if a.recommend_score is defined %}<a class="btn btn-sm" href="/article/{{a.id}}#recommend-explanation">为什么推荐</a>{% endif %}
       <button class="btn-sm" onclick="event.preventDefault();sendEvent({{a.id}},'favorite',this)">收藏</button>
       <button class="btn-sm" onclick="event.preventDefault();sendEvent({{a.id}},'not_interested',this)">不感兴趣</button>
       <button class="btn-sm btn-err" onclick="event.preventDefault();sendEvent({{a.id}},'hide',this)">隐藏</button>

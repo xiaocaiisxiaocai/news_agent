@@ -11,8 +11,20 @@
       <input type="number" name="days" value="{{days}}" min="1" max="365" style="width:96px">
     </div>
     <button class="btn-p shrink" style="align-self:flex-end" type="submit">刷新画像</button>
+    <button class="shrink" style="align-self:flex-end" type="button" onclick="applyProfile()">应用到推荐偏好</button>
     <a class="btn shrink" style="align-self:flex-end" href="/settings">调整显式偏好</a>
+    <span id="apply-result" class="shrink" style="font-size:12px;color:var(--t2);align-self:flex-end"></span>
   </form>
+</div>
+
+<div class="card">
+  <h2>当前显式偏好</h2>
+  <div class="grid4">
+    <div class="stat"><div class="stat-l">加分词</div><div class="stat-v">{{prefs.boost|length}}</div><div class="stat-m">{% for k in (prefs.boost.keys()|list)[:3] %}{{k}}{{'、' if not loop.last else ''}}{% else %}空{% endfor %}</div></div>
+    <div class="stat"><div class="stat-l">扣分词</div><div class="stat-v">{{prefs.penalty|length}}</div><div class="stat-m">{% for k in (prefs.penalty.keys()|list)[:3] %}{{k}}{{'、' if not loop.last else ''}}{% else %}空{% endfor %}</div></div>
+    <div class="stat"><div class="stat-l">屏蔽词</div><div class="stat-v">{{prefs.muted|length}}</div><div class="stat-m">{% for k in prefs.muted[:3] %}{{k}}{{'、' if not loop.last else ''}}{% else %}空{% endfor %}</div></div>
+    <div class="stat"><div class="stat-l">分类权重</div><div class="stat-v">{{prefs.cat_weight|length}}</div><div class="stat-m">设置页可细调</div></div>
+  </div>
 </div>
 
 <div class="grid4">
@@ -67,4 +79,21 @@
   <div class="empty">暂无分类行为数据</div>
   {% endif %}
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function applyProfile(){
+  const result = document.getElementById('apply-result');
+  result.textContent = '应用中...';
+  const d = await api('/api/preferences/tune', {action:'apply_profile', days: {{days}}, limit: 5});
+  if(d.ok){
+    result.style.color = 'var(--ok)';
+    result.textContent = '已应用';
+    setTimeout(()=>location.reload(), 700);
+  }else{
+    result.style.color = 'var(--err)';
+    result.textContent = d.error || '应用失败';
+  }
+}
+</script>
 {% endblock %}

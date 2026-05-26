@@ -562,7 +562,8 @@ def settings_page():
 @app.route("/preferences")
 def preferences_page():
     days = int(request.args.get("days", 30))
-    return render_template("preferences.html", profile=get_preference_profile(days=days), days=days)
+    return render_template("preferences.html", profile=get_preference_profile(days=days),
+                           prefs=cfg.get_preferences(), days=days)
 
 
 @app.route("/briefs")
@@ -1121,6 +1122,47 @@ def api_preferences_profile():
     days = int(request.args.get("days", 30))
     limit = int(request.args.get("limit", 12))
     return jsonify(get_preference_profile(days=days, limit=limit))
+
+
+@app.route("/api/preferences/tune", methods=["POST"])
+def api_preferences_tune():
+    data = request.json or {}
+    action = (data.get("action") or "").strip()
+    prefs = cfg.get_preferences()
+
+    def tune_term(term: str, mode: str):
+        term = (term or "").strip()
+        if not term:
+            return
+        if mode == "boost":
+            prefs.setdefault("boost", {})[term] = int(prefs.get("boost", {}).get(term, 0)) + 1
+            prefs.get("penalty", {}).pop(term, None)
+            prefs["muted"] = [t for t in prefs.get("muted", []) if t != term]
+        elif mode == "penalty":
+            prefs.setdefault("penalty", {})[term] = int(prefs.get("penalty", {}).get(term, 0)) - 1
+            prefs.get("boost", {}).pop(term, None)
+            prefs["muted"] = [t for t in prefs.get("muted", []) if t != term]
+        elif mode == "mute":
+            if term not in prefs.setdefault("muted", []):
+                prefs["muted"].append(term)
+            prefs.get("boost", {}).pop(term, None)
+            prefs.get("penalty", {}).pop(term, None)
+
+    if action == "apply_profile":
+        profile = get_preference_profile(days=int(data.get("days", 30)), limit=int(data.get("limit", 5)))
+        for topic in profile.get("positive_topics", [])[: int(data.get("limit", 5))]:
+            tune_term(topic.get("term", ""), "boost")
+        for topic in profile.get("negative_topics", [])[: int(data.get("limit", 5))]:
+            tune_term(topic.get("term", ""), "penalty")
+    elif action in {"boost", "penalty", "mute"}:
+        tune_term(data.get("term", ""), action)
+    else:
+        return jsonify({"error": "不支持的纠偏动作"}), 400
+
+    cfg.set_config("pref.boost", prefs.get("boost", {}))
+    cfg.set_config("pref.penalty", prefs.get("penalty", {}))
+    cfg.set_config("pref.muted", prefs.get("muted", []))
+    return jsonify({"ok": True, "preferences": cfg.get_preferences()})
 
 
 @app.route("/api/preferences", methods=["POST"])

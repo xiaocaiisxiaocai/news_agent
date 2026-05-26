@@ -20,7 +20,7 @@
   {% if article.keywords %}<div>{% for k in article.keywords %}<span class="tag">{{k}}</span>{% endfor %}</div>{% endif %}
 </div>
 {% if explanation %}
-<div class="card">
+<div class="card" id="recommend-explanation">
   <h2>推荐解释</h2>
   <div class="grid4" style="margin-bottom:12px">
     <div class="stat"><div class="stat-l">推荐分</div><div class="stat-v">{{explanation.recommend_score}}</div><div class="stat-m">{{explanation.recommend_reason}}</div></div>
@@ -43,6 +43,24 @@
   </table>
   {% else %}
   <div class="empty" style="padding:12px 0;text-align:left">暂无相似历史行为，当前主要按重要性和直接反馈排序。</div>
+  {% endif %}
+  {% if article.keywords %}
+  <div class="sep"></div>
+  <h3>纠偏推荐</h3>
+  <div class="row" style="margin-bottom:8px">
+    <div class="field shrink" style="margin:0">
+      <label>主题</label>
+      <select id="tune-term" style="width:160px">
+        {% for k in article.keywords %}
+        <option value="{{k}}">{{k}}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn-sm shrink" onclick="tunePreference('boost')">加强这类主题</button>
+    <button class="btn-sm shrink" onclick="tunePreference('penalty')">减少这类主题</button>
+    <button class="btn-sm btn-err shrink" onclick="tunePreference('mute')">屏蔽这个主题</button>
+    <span id="tune-result" class="shrink" style="font-size:12px;color:var(--t2)"></span>
+  </div>
   {% endif %}
 </div>
 {% endif %}
@@ -94,6 +112,21 @@ async function sendCurrentArticle(){
   }else{
     result.style.color = 'var(--err)';
     result.textContent = d.error || '发送失败';
+  }
+}
+
+async function tunePreference(action){
+  const term = document.getElementById('tune-term')?.value;
+  const result = document.getElementById('tune-result');
+  if(!term || !result) return;
+  result.textContent = '保存中...';
+  const d = await api('/api/preferences/tune', {term, action});
+  if(d.ok){
+    result.style.color = 'var(--ok)';
+    result.textContent = '偏好已更新';
+  }else{
+    result.style.color = 'var(--err)';
+    result.textContent = d.error || '更新失败';
   }
 }
 </script>
