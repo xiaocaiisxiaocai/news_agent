@@ -27,6 +27,16 @@
   </div>
 </div>
 
+<div class="card">
+  <h2>推荐效果看板</h2>
+  <div class="grid4">
+    <div class="stat"><div class="stat-l">互动数</div><div class="stat-v">{{effectiveness.interaction_count}}</div><div class="stat-m">最近 {{effectiveness.days}} 天</div></div>
+    <div class="stat"><div class="stat-l">收藏率</div><div class="stat-v">{{effectiveness.favorite_rate}}%</div><div class="stat-m">收藏 / 互动</div></div>
+    <div class="stat"><div class="stat-l">隐藏率</div><div class="stat-v">{{effectiveness.hide_rate}}%</div><div class="stat-m">隐藏或不感兴趣 / 互动</div></div>
+    <div class="stat"><div class="stat-l">纠偏次数</div><div class="stat-v">{{effectiveness.tuning_count}}</div><div class="stat-m">手动或画像应用</div></div>
+  </div>
+</div>
+
 <div class="grid4">
   {% for event,label in [('open','打开'),('click','点击'),('favorite','收藏'),('hide','隐藏')] %}
   <div class="stat">
@@ -77,6 +87,25 @@
   </table>
   {% else %}
   <div class="empty">暂无分类行为数据</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>纠偏历史</h2>
+  {% if tuning_logs %}
+  <table>
+    <tr><th>时间</th><th>主题</th><th>动作</th><th>来源</th></tr>
+    {% for log in tuning_logs %}
+    <tr>
+      <td>{{log.created_at[:19]}}</td>
+      <td>{{log.term}}</td>
+      <td>{{log.action}}</td>
+      <td>{{log.source}}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">暂无纠偏历史</div>
   {% endif %}
 </div>
 {% endblock %}

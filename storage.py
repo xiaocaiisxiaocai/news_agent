@@ -148,6 +148,18 @@ def init_db():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_notify_logs_channel ON notification_logs(channel_id)")
 
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS preference_tuning_logs (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                term       TEXT DEFAULT '',
+                action     TEXT NOT NULL,
+                source     TEXT DEFAULT '',
+                payload    TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_pref_tuning_dt ON preference_tuning_logs(created_at)")
+
 
 # ── 去重工具 ─────────────────────────────────────────────
 
@@ -450,6 +462,25 @@ def _recommend_reason(article: dict, memory_reason: str) -> str:
     return "；".join(reasons) or "按时间和重要性推荐"
 
 
+def _recommend_quality_label(article: dict) -> str:
+    feedback = int(article.get("feedback_score") or 0)
+    memory = int(article.get("memory_score") or 0)
+    importance = int(article.get("importance") or 0)
+    interactions = (
+        int(article.get("open_count") or 0) +
+        int(article.get("favorite_count") or 0) +
+        int(article.get("hide_count") or 0) +
+        int(article.get("not_interested_count") or 0)
+    )
+    if feedback < 0 or memory < 0:
+        return "有争议推荐"
+    if feedback > 0 and importance >= 4:
+        return "高置信推荐"
+    if interactions == 0 and memory == 0:
+        return "缺少行为数据"
+    return "常规推荐"
+
+
 def explain_article_recommendation(article_id: int) -> dict | None:
     article = get_article(article_id)
     if not article:
@@ -526,6 +557,68 @@ def get_preference_profile(days: int = 30, limit: int = 12) -> dict:
     }
 
 
+def record_preference_tuning(term: str, action: str, source: str = "", payload: dict | None = None) -> int:
+    now = datetime.now().isoformat()
+    with _conn() as c:
+        cur = c.execute("""
+            INSERT INTO preference_tuning_logs (term,action,source,payload,created_at)
+            VALUES (?,?,?,?,?)
+        """, (
+            (term or "").strip(),
+            action,
+            source or "",
+            json.dumps(payload or {}, ensure_ascii=False),
+            now,
+        ))
+        return cur.lastrowid
+
+
+def get_preference_tuning_logs(limit: int = 20, days: int = 30) -> list:
+    with _conn() as c:
+        rows = c.execute("""
+            SELECT * FROM preference_tuning_logs
+            WHERE date(created_at) >= date('now', ?)
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+        """, (f"-{int(days)} days", int(limit))).fetchall()
+    logs = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["payload"] = json.loads(item.get("payload") or "{}")
+        except json.JSONDecodeError:
+            item["payload"] = {}
+        logs.append(item)
+    return logs
+
+
+def get_recommendation_effectiveness(days: int = 7) -> dict:
+    with _conn() as c:
+        rows = c.execute("""
+            SELECT event_type, COUNT(*) AS cnt
+            FROM article_events
+            WHERE date(created_at) >= date('now', ?)
+            GROUP BY event_type
+        """, (f"-{int(days)} days",)).fetchall()
+        tuning_count = c.execute("""
+            SELECT COUNT(*) AS cnt FROM preference_tuning_logs
+            WHERE date(created_at) >= date('now', ?)
+        """, (f"-{int(days)} days",)).fetchone()["cnt"]
+    events = {row["event_type"]: int(row["cnt"]) for row in rows}
+    opens = events.get("open", 0) + events.get("click", 0)
+    favorites = events.get("favorite", 0)
+    hides = events.get("hide", 0) + events.get("not_interested", 0)
+    denominator = max(opens + favorites + hides, 1)
+    return {
+        "days": int(days),
+        "events": events,
+        "tuning_count": int(tuning_count),
+        "favorite_rate": round(favorites * 100 / denominator, 1),
+        "hide_rate": round(hides * 100 / denominator, 1),
+        "interaction_count": opens + favorites + hides,
+    }
+
+
 def get_recommended_articles(days=7, limit=20, offset=0, category="", min_importance=0, search="") -> list:
     where, params = _article_filter_sql(days, category, min_importance, search)
     where = where.replace("created_at", "a.created_at")
@@ -557,6 +650,7 @@ def get_recommended_articles(days=7, limit=20, offset=0, category="", min_import
         article["memory_score"] = memory_score
         article["recommend_score"] = int(article.get("base_score") or 0) + int(article.get("feedback_score") or 0) + memory_score
         article["recommend_reason"] = _recommend_reason(article, memory_reason)
+        article["quality_label"] = _recommend_quality_label(article)
         articles.append(article)
     articles.sort(key=lambda a: (a["recommend_score"], a.get("created_at", "")), reverse=True)
     return articles[int(offset):int(offset) + int(limit)]

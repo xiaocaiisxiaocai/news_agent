@@ -37,6 +37,7 @@
         <span style="margin:0 5px">·</span>{{a.created_at[:10]}}
         {% if a.recommend_score is defined %}<span style="margin:0 5px">·</span>推荐分 {{a.recommend_score}}{% endif %}
       {% if a.memory_score is defined %}<span style="margin:0 5px">·</span>记忆分 {{a.memory_score}}{% endif %}
+        {% if a.quality_label is defined %}<span style="margin:0 5px">·</span>推荐质量 <span class="badge b-info">{{a.quality_label}}</span>{% endif %}
         {% if a.language=='英文' %}<span class="badge" style="margin-left:5px">EN</span>{% endif %}
       </div>
       {% if a.recommend_reason is defined %}<div style="font-size:12px;color:var(--t2);margin-top:4px">推荐理由：{{a.recommend_reason}}</div>{% endif %}

@@ -302,6 +302,11 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("营销", resp.get_json()["preferences"]["muted"])
 
+        logs = storage.get_preference_tuning_logs(limit=10)
+        self.assertEqual(logs[0]["term"], "营销")
+        self.assertEqual(logs[0]["action"], "mute")
+        self.assertEqual(logs[0]["source"], "api")
+
     def test_preference_tune_api_can_apply_profile_topics(self):
         self.save_article(
             "应用偏好 GPT",
@@ -329,6 +334,50 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("GPT", prefs["boost"])
         self.assertIn("广告", prefs["penalty"])
+        logs = storage.get_preference_tuning_logs(limit=10)
+        self.assertEqual(logs[0]["action"], "apply_profile")
+
+    def test_preference_effectiveness_summary_counts_quality_metrics(self):
+        self.save_article("效果收藏", "https://example.com/effect-fav", "科技/AI", 5, "Good")
+        self.save_article("效果隐藏", "https://example.com/effect-hide", "商业", 3, "Bad")
+        articles = {a["title"]: a for a in storage.get_articles(days=1, limit=10)}
+        storage.record_article_event(articles["效果收藏"]["id"], "open")
+        storage.record_article_event(articles["效果收藏"]["id"], "favorite")
+        storage.record_article_event(articles["效果隐藏"]["id"], "hide")
+        storage.record_preference_tuning("GPT", "boost", source="test")
+
+        summary = storage.get_recommendation_effectiveness(days=1)
+
+        self.assertEqual(summary["events"]["open"], 1)
+        self.assertEqual(summary["events"]["favorite"], 1)
+        self.assertEqual(summary["events"]["hide"], 1)
+        self.assertEqual(summary["tuning_count"], 1)
+        self.assertGreater(summary["favorite_rate"], 0)
+        self.assertGreater(summary["hide_rate"], 0)
+
+    def test_recommended_articles_include_quality_labels(self):
+        self.save_article("高置信推荐", "https://example.com/quality-high", "科技/AI", 5, "High")
+        self.save_article("冷启动推荐", "https://example.com/quality-new", "其他", 2, "New", keywords=["冷启动"])
+        articles = {a["title"]: a for a in storage.get_articles(days=1, limit=10)}
+        storage.record_article_event(articles["高置信推荐"]["id"], "favorite")
+
+        recommended = storage.get_recommended_articles(days=1, limit=10)
+        labels = {a["title"]: a["quality_label"] for a in recommended}
+
+        self.assertIn("高置信推荐", labels["高置信推荐"])
+        self.assertIn("缺少行为数据", labels["冷启动推荐"])
+
+    def test_preference_dashboard_api_returns_effectiveness_and_tuning_logs(self):
+        storage.record_preference_tuning("GPT", "boost", source="test")
+
+        resp = self.client.get("/api/preferences/dashboard?days=7")
+        data = resp.get_json()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("effectiveness", data)
+        self.assertIn("tuning_logs", data)
+        self.assertEqual(data["tuning_logs"][0]["term"], "GPT")
+
 
     def test_notification_channel_crud_and_send_webhook_records_log(self):
         channel_id = storage.save_notification_channel({
@@ -1070,6 +1119,8 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("应用到推荐偏好", html)
         self.assertIn("当前显式偏好", html)
+        self.assertIn("推荐效果看板", html)
+        self.assertIn("纠偏历史", html)
 
     def test_recommended_articles_page_links_to_recommendation_debug(self):
         self.save_article("列表调试文章", "https://example.com/list-debug", "科技/AI", 4, "Debug")
@@ -1080,6 +1131,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("为什么推荐", html)
         self.assertIn("#recommend-explanation", html)
+        self.assertIn("推荐质量", html)
 
     def test_send_recommended_notifications_sends_top_articles_to_enabled_channels(self):
         channel_id = storage.save_notification_channel({

@@ -26,7 +26,8 @@ from storage import (
     explain_article_recommendation, get_preference_profile,
     save_notification_channel, get_notification_channels, get_notification_channel,
     delete_notification_channel, record_notification_log, has_successful_notification,
-    get_notification_logs, get_notification_stats,
+    get_notification_logs, get_notification_stats, record_preference_tuning,
+    get_preference_tuning_logs, get_recommendation_effectiveness,
 )
 from fetchers.fetch import fetch_url, from_text, fetch_all_rss, fetch_emails, fetch_rss_feed
 from processors.batch import batch_process, process_one
@@ -563,7 +564,9 @@ def settings_page():
 def preferences_page():
     days = int(request.args.get("days", 30))
     return render_template("preferences.html", profile=get_preference_profile(days=days),
-                           prefs=cfg.get_preferences(), days=days)
+                           prefs=cfg.get_preferences(), days=days,
+                           effectiveness=get_recommendation_effectiveness(days=days),
+                           tuning_logs=get_preference_tuning_logs(days=days, limit=20))
 
 
 @app.route("/briefs")
@@ -1124,6 +1127,15 @@ def api_preferences_profile():
     return jsonify(get_preference_profile(days=days, limit=limit))
 
 
+@app.route("/api/preferences/dashboard")
+def api_preferences_dashboard():
+    days = int(request.args.get("days", 7))
+    return jsonify({
+        "effectiveness": get_recommendation_effectiveness(days=days),
+        "tuning_logs": get_preference_tuning_logs(days=days, limit=30),
+    })
+
+
 @app.route("/api/preferences/tune", methods=["POST"])
 def api_preferences_tune():
     data = request.json or {}
@@ -1150,12 +1162,19 @@ def api_preferences_tune():
 
     if action == "apply_profile":
         profile = get_preference_profile(days=int(data.get("days", 30)), limit=int(data.get("limit", 5)))
+        applied_terms = []
         for topic in profile.get("positive_topics", [])[: int(data.get("limit", 5))]:
             tune_term(topic.get("term", ""), "boost")
+            applied_terms.append(topic.get("term", ""))
         for topic in profile.get("negative_topics", [])[: int(data.get("limit", 5))]:
             tune_term(topic.get("term", ""), "penalty")
+            applied_terms.append(topic.get("term", ""))
+        record_preference_tuning("画像主题", "apply_profile", source=data.get("source", "api"),
+                                 payload={"terms": applied_terms, "days": data.get("days", 30)})
     elif action in {"boost", "penalty", "mute"}:
-        tune_term(data.get("term", ""), action)
+        term = data.get("term", "")
+        tune_term(term, action)
+        record_preference_tuning(term, action, source=data.get("source", "api"))
     else:
         return jsonify({"error": "不支持的纠偏动作"}), 400
 
