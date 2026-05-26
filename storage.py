@@ -2,7 +2,7 @@
 # storage.py —— 数据持久层（SQLite）
 # ============================================================
 
-import sqlite3, hashlib, json, os, logging
+import sqlite3, hashlib, json, os, logging, re
 from datetime import datetime, date
 from contextlib import contextmanager
 from config_store import DB_PATH
@@ -276,6 +276,161 @@ def get_article_event_counts(article_id: int) -> dict:
     return {r["event_type"]: r["cnt"] for r in rows}
 
 
+def _normalize_term(term: str) -> str:
+    return (term or "").strip().lower()
+
+
+def _text_terms(text: str) -> set[str]:
+    """把中英文文本拆成可解释的本地记忆词，不依赖外部向量服务。"""
+    terms = set()
+    for raw in re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+", text or ""):
+        token = _normalize_term(raw)
+        if len(token) < 2:
+            continue
+        terms.add(token)
+        if re.fullmatch(r"[\u4e00-\u9fff]+", token) and len(token) > 2:
+            terms.update(token[i:i + 2] for i in range(len(token) - 1))
+    return terms
+
+
+def _article_term_weights(article: dict) -> dict[str, int]:
+    weights: dict[str, int] = {}
+
+    def add(term: str, weight: int):
+        term = _normalize_term(term)
+        if len(term) >= 2:
+            weights[term] = max(weights.get(term, 0), weight)
+
+    for kw in article.get("keywords") or []:
+        add(str(kw), 5)
+    for part in str(article.get("category") or "").split("/"):
+        add(part, 3)
+    for term in _text_terms(article.get("title") or ""):
+        add(term, 2)
+    body = " ".join(str(article.get(k) or "") for k in ("conclusion", "summary", "points", "action"))
+    for term in _text_terms(body):
+        add(term, 1)
+    return weights
+
+
+def _article_keyword_lookup(article: dict) -> dict[str, str]:
+    return {_normalize_term(str(k)): str(k) for k in article.get("keywords") or [] if str(k).strip()}
+
+
+def _similarity_parts(left: dict, right: dict) -> tuple[float, list[str]]:
+    left_terms = _article_term_weights(left)
+    right_terms = _article_term_weights(right)
+    if not left_terms or not right_terms:
+        return 0.0, []
+    keys = set(left_terms) | set(right_terms)
+    overlap_keys = set(left_terms) & set(right_terms)
+    overlap_weight = sum(min(left_terms[k], right_terms[k]) for k in overlap_keys)
+    union_weight = sum(max(left_terms.get(k, 0), right_terms.get(k, 0)) for k in keys)
+    if union_weight <= 0:
+        return 0.0, []
+
+    keyword_lookup = _article_keyword_lookup(left) | _article_keyword_lookup(right)
+    overlap = [keyword_lookup.get(k, k) for k in overlap_keys]
+    overlap.sort(key=lambda k: (-max(left_terms.get(_normalize_term(k), 0), right_terms.get(_normalize_term(k), 0)), k))
+    return round(overlap_weight / union_weight, 3), overlap[:6]
+
+
+def find_similar_articles(article_id: int, limit: int = 5, days: int = 30) -> list:
+    target = get_article(article_id)
+    if not target:
+        return []
+    candidates = get_articles(days=days, limit=500)
+    scored = []
+    for article in candidates:
+        if article["id"] == target["id"]:
+            continue
+        similarity, overlap = _similarity_parts(target, article)
+        if similarity <= 0:
+            continue
+        article["similarity"] = similarity
+        article["overlap_keywords"] = overlap
+        article["memory_reason"] = "相似主题：" + "、".join(overlap[:3]) if overlap else "标题或摘要相似"
+        scored.append(article)
+    scored.sort(key=lambda a: (a["similarity"], a.get("importance", 0), a.get("created_at", "")), reverse=True)
+    return scored[:int(limit)]
+
+
+def _event_memory_profiles() -> list[tuple[dict, str, int]]:
+    with _conn() as c:
+        rows = c.execute("""
+            SELECT a.*, e.event_type, e.weight
+            FROM article_events e
+            JOIN articles a ON a.id = e.article_id
+            WHERE e.event_type IN ('favorite','share','click','open','hide','not_interested')
+            ORDER BY e.created_at DESC
+            LIMIT 300
+        """).fetchall()
+    profiles = []
+    for row in rows:
+        article = _art_dict(row)
+        profiles.append((article, row["event_type"], int(row["weight"] or 0)))
+    return profiles
+
+
+def _memory_score_for_article(article: dict, profiles: list[tuple[dict, str, int]]) -> tuple[int, str]:
+    total = 0.0
+    positive_reason = ""
+    negative_reason = ""
+    positive_rank = {"favorite": 4, "share": 3, "click": 2, "open": 1}
+    negative_rank = {"hide": 2, "not_interested": 1}
+    best_positive = (0.0, 0, "")
+    best_negative = (0.0, 0, "")
+
+    for memory_article, event_type, weight in profiles:
+        if memory_article["id"] == article["id"]:
+            continue
+        similarity, overlap = _similarity_parts(article, memory_article)
+        if similarity < 0.18:
+            continue
+        weighted = similarity * weight
+        total += weighted
+        words = "、".join(overlap[:2]) if overlap else "主题"
+        if weight > 0:
+            rank = positive_rank.get(event_type, 0)
+            if (similarity, rank) > (best_positive[0], best_positive[1]):
+                best_positive = (similarity, rank, f"与{_event_label(event_type)}文章相似：{words}")
+        elif weight < 0:
+            rank = negative_rank.get(event_type, 0)
+            if (similarity, rank) > (best_negative[0], best_negative[1]):
+                best_negative = (similarity, rank, f"与{_event_label(event_type)}文章相似：{words}")
+
+    score = int(round(total))
+    if best_positive[2] and score > 0:
+        positive_reason = best_positive[2]
+    if best_negative[2] and score < 0:
+        negative_reason = best_negative[2]
+    return score, positive_reason or negative_reason
+
+
+def _event_label(event_type: str) -> str:
+    return {
+        "open": "打开过的",
+        "click": "点击过的",
+        "favorite": "收藏过的",
+        "share": "分享过的",
+        "hide": "隐藏过的",
+        "not_interested": "不感兴趣的",
+    }.get(event_type, "历史")
+
+
+def _recommend_reason(article: dict, memory_reason: str) -> str:
+    reasons = []
+    if int(article.get("importance") or 0) >= 4:
+        reasons.append("重要性高")
+    if int(article.get("feedback_score") or 0) > 0:
+        reasons.append("有正向反馈")
+    elif int(article.get("feedback_score") or 0) < 0:
+        reasons.append("有负向反馈")
+    if memory_reason:
+        reasons.append(memory_reason)
+    return "；".join(reasons) or "按时间和重要性推荐"
+
+
 def get_recommended_articles(days=7, limit=20, offset=0, category="", min_importance=0, search="") -> list:
     where, params = _article_filter_sql(days, category, min_importance, search)
     where = where.replace("created_at", "a.created_at")
@@ -288,7 +443,6 @@ def get_recommended_articles(days=7, limit=20, offset=0, category="", min_import
             SELECT a.*,
                    a.importance * 10 AS base_score,
                    COALESCE(SUM(e.weight), 0) AS feedback_score,
-                   a.importance * 10 + COALESCE(SUM(e.weight), 0) AS recommend_score,
                    SUM(CASE WHEN e.event_type='open' THEN 1 ELSE 0 END) AS open_count,
                    SUM(CASE WHEN e.event_type='favorite' THEN 1 ELSE 0 END) AS favorite_count,
                    SUM(CASE WHEN e.event_type='hide' THEN 1 ELSE 0 END) AS hide_count,
@@ -297,10 +451,20 @@ def get_recommended_articles(days=7, limit=20, offset=0, category="", min_import
             LEFT JOIN article_events e ON e.article_id = a.id
             WHERE {where}
             GROUP BY a.id
-            ORDER BY recommend_score DESC, a.created_at DESC
-            LIMIT ? OFFSET ?
-        """, params + [int(limit), int(offset)]).fetchall()
-    return [_art_dict(r) for r in rows]
+            ORDER BY a.created_at DESC
+        """, params).fetchall()
+
+    profiles = _event_memory_profiles()
+    articles = []
+    for row in rows:
+        article = _art_dict(row)
+        memory_score, memory_reason = _memory_score_for_article(article, profiles)
+        article["memory_score"] = memory_score
+        article["recommend_score"] = int(article.get("base_score") or 0) + int(article.get("feedback_score") or 0) + memory_score
+        article["recommend_reason"] = _recommend_reason(article, memory_reason)
+        articles.append(article)
+    articles.sort(key=lambda a: (a["recommend_score"], a.get("created_at", "")), reverse=True)
+    return articles[int(offset):int(offset) + int(limit)]
 
 
 def count_articles(days=7, category="", min_importance=0, search="") -> int:

@@ -191,13 +191,15 @@
     </div>
     {% if recommendations %}
     <table>
-      <tr><th>标题</th><th>推荐分</th><th>基础分</th><th>反馈分</th><th>打开/收藏/隐藏</th><th>分类</th></tr>
+      <tr><th>标题</th><th>推荐分</th><th>基础分</th><th>反馈分</th><th>记忆分</th><th>推荐理由</th><th>打开/收藏/隐藏</th><th>分类</th></tr>
       {% for a in recommendations %}
       <tr>
         <td><a href="/article/{{a.id}}">{{a.title}}</a></td>
         <td>{{a.recommend_score}}</td>
         <td>{{a.base_score}}</td>
         <td>{{a.feedback_score}}</td>
+        <td>{{a.memory_score}}</td>
+        <td>{{a.recommend_reason}}</td>
         <td>{{a.open_count}} / {{a.favorite_count}} / {{a.hide_count}}</td>
         <td>{{a.category}}</td>
       </tr>

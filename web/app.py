@@ -22,7 +22,7 @@ from storage import (
     init_db, get_stats, get_articles, get_article, save_article,
     get_eval_stats, get_rss_health, get_active_topics, record_rss_fetch,
     count_articles, cache_stats, cache_clear, record_article_event,
-    get_recommended_articles, get_article_event_counts,
+    get_recommended_articles, get_article_event_counts, find_similar_articles,
     save_notification_channel, get_notification_channels, get_notification_channel,
     delete_notification_channel, record_notification_log, has_successful_notification,
     get_notification_logs, get_notification_stats,
@@ -516,7 +516,7 @@ def article_detail(aid):
         record_article_event(aid, "open")
     except Exception as e:
         logger.warning(f"记录文章打开事件失败: {e}")
-    related = find_related(art, days=30, top_k=5)
+    related = find_similar_articles(aid, limit=5, days=30) or find_related(art, days=30, top_k=5)
     channels = get_notification_channels(enabled_only=True)
     return render_template("article_detail.html", article=art, related=related, channels=channels)
 

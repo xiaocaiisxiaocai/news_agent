@@ -45,14 +45,14 @@ class RegressionTests(unittest.TestCase):
         webapp.app.secret_key = self.old_secret
         self.tmp.cleanup()
 
-    def save_article(self, title, url, category, importance, conclusion=""):
+    def save_article(self, title, url, category, importance, conclusion="", keywords=None):
         return storage.save_article({
             "title": title,
             "url": url,
             "category": category,
             "importance": importance,
             "language": "中文",
-            "keywords": [category],
+            "keywords": keywords or [category],
             "summary_raw": conclusion,
             "summary": {"conclusion": conclusion, "points": [], "action": ""},
         })
@@ -132,6 +132,102 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(data[0]["title"], "Recommended target")
         self.assertIn("recommend_score", data[0])
+
+    def test_find_similar_articles_uses_keywords_and_conclusion(self):
+        self.save_article(
+            "OpenAI 模型发布",
+            "https://example.com/memory-a",
+            "科技/AI",
+            5,
+            "OpenAI 发布新的 GPT 大模型",
+            keywords=["OpenAI", "GPT", "模型"],
+        )
+        self.save_article(
+            "GPT 推理能力提升",
+            "https://example.com/memory-b",
+            "科技/AI",
+            4,
+            "GPT 大模型推理能力明显提升",
+            keywords=["GPT", "模型", "推理"],
+        )
+        self.save_article(
+            "电商促销活动",
+            "https://example.com/memory-c",
+            "商业",
+            4,
+            "电商平台推出促销活动",
+            keywords=["电商", "促销"],
+        )
+        articles = {a["title"]: a for a in storage.get_articles(days=1, limit=10)}
+
+        similar = storage.find_similar_articles(articles["OpenAI 模型发布"]["id"], limit=5, days=1)
+
+        self.assertEqual(similar[0]["title"], "GPT 推理能力提升")
+        self.assertGreater(similar[0]["similarity"], 0)
+        self.assertIn("GPT", similar[0]["overlap_keywords"])
+        self.assertIn("memory_reason", similar[0])
+
+    def test_recommendations_include_memory_score_from_positive_feedback(self):
+        self.save_article(
+            "收藏过的 GPT 文章",
+            "https://example.com/memory-liked",
+            "科技/AI",
+            3,
+            "GPT 模型推理新闻",
+            keywords=["GPT", "模型", "推理"],
+        )
+        self.save_article(
+            "新的 GPT 推理文章",
+            "https://example.com/memory-new",
+            "科技/AI",
+            3,
+            "新的 GPT 模型推理能力更新",
+            keywords=["GPT", "模型", "推理"],
+        )
+        self.save_article(
+            "无关商业文章",
+            "https://example.com/memory-unrelated",
+            "商业",
+            3,
+            "商业渠道调整",
+            keywords=["商业", "渠道"],
+        )
+        articles = {a["title"]: a for a in storage.get_articles(days=1, limit=10)}
+        storage.record_article_event(articles["收藏过的 GPT 文章"]["id"], "favorite")
+
+        recommended = storage.get_recommended_articles(days=1, limit=10)
+        target = next(a for a in recommended if a["title"] == "新的 GPT 推理文章")
+
+        self.assertGreater(target["memory_score"], 0)
+        self.assertIn("相似", target["recommend_reason"])
+        self.assertIn("收藏", target["recommend_reason"])
+
+    def test_recommendations_penalize_hidden_similar_articles(self):
+        self.save_article(
+            "隐藏过的营销文章",
+            "https://example.com/memory-hidden",
+            "商业",
+            3,
+            "广告营销活动",
+            keywords=["广告", "营销"],
+        )
+        self.save_article(
+            "新的广告营销文章",
+            "https://example.com/memory-ad",
+            "商业",
+            3,
+            "广告营销玩法",
+            keywords=["广告", "营销"],
+        )
+        articles = {a["title"]: a for a in storage.get_articles(days=1, limit=10)}
+        storage.record_article_event(articles["隐藏过的营销文章"]["id"], "hide")
+
+        recommended = storage.get_recommended_articles(days=1, limit=10)
+        target = next(a for a in recommended if a["title"] == "新的广告营销文章")
+
+        self.assertLess(target["memory_score"], 0)
+        self.assertIn("相似", target["recommend_reason"])
+        self.assertIn("隐藏", target["recommend_reason"])
 
     def test_notification_channel_crud_and_send_webhook_records_log(self):
         channel_id = storage.save_notification_channel({
@@ -771,7 +867,35 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("基础分", html)
         self.assertIn("反馈分", html)
+        self.assertIn("记忆分", html)
+        self.assertIn("推荐理由", html)
         self.assertIn("打开/收藏/隐藏", html)
+
+    def test_article_detail_page_shows_memory_similar_articles(self):
+        self.save_article(
+            "详情 GPT 文章",
+            "https://example.com/detail-memory-a",
+            "科技/AI",
+            5,
+            "GPT 模型推理新闻",
+            keywords=["GPT", "模型", "推理"],
+        )
+        self.save_article(
+            "详情相似文章",
+            "https://example.com/detail-memory-b",
+            "科技/AI",
+            4,
+            "GPT 模型能力更新",
+            keywords=["GPT", "模型"],
+        )
+        articles = {a["title"]: a for a in storage.get_articles(days=1, limit=10)}
+
+        resp = self.client.get(f"/article/{articles['详情 GPT 文章']['id']}")
+        html = resp.get_data(as_text=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("记忆相似文章", html)
+        self.assertIn("详情相似文章", html)
 
     def test_send_recommended_notifications_sends_top_articles_to_enabled_channels(self):
         channel_id = storage.save_notification_channel({
