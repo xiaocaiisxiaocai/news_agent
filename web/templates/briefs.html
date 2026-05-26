@@ -7,6 +7,42 @@
   <button onclick="genBrief('html')">生成 HTML 简报</button>
 </div>
 <div id="flash" class="flash"></div>
+<div class="card">
+  <h2>简报推送效果</h2>
+  <div class="grid4" style="margin-bottom:14px">
+    <div class="stat"><div class="stat-l">发送成功</div><div class="stat-v">{{brief_push_stats.sent}}</div><div class="stat-m">简报推送日志</div></div>
+    <div class="stat"><div class="stat-l">发送失败</div><div class="stat-v">{{brief_push_stats.failed}}</div><div class="stat-m">{{brief_push_stats.last_failure_at[:16] if brief_push_stats.last_failure_at else '无失败记录'}}</div></div>
+    <div class="stat"><div class="stat-l">最近成功</div><div class="stat-v" style="font-size:14px">{{brief_push_stats.last_success_at[:16] if brief_push_stats.last_success_at else '—'}}</div><div class="stat-m">自动或手动推送</div></div>
+    <div class="stat"><div class="stat-l">自动推送</div><div class="stat-v" style="font-size:16px">{{'启用' if brief_cfg.get('brief.push.enabled')=='true' else '关闭'}}</div><div class="stat-m">brief.push.enabled={{brief_cfg.get('brief.push.enabled','false')}}</div></div>
+  </div>
+  <div class="row" style="align-items:flex-end">
+    <div class="row">
+      <input type="checkbox" id="brief-push-enabled" class="shrink" style="width:auto" {{ 'checked' if brief_cfg.get('brief.push.enabled')=='true' else '' }}>
+      <label for="brief-push-enabled" style="margin:0">自动推送简报</label>
+    </div>
+    <div class="field shrink"><label>推送格式</label>
+      <select id="brief-push-format" style="min-width:120px">
+        <option value="md" {{'selected' if brief_cfg.get('brief.push.format','md')=='md' else ''}}>Markdown</option>
+        <option value="html" {{'selected' if brief_cfg.get('brief.push.format','md')=='html' else ''}}>HTML</option>
+      </select>
+    </div>
+    <button class="btn-p shrink" onclick="saveBriefPushConfig()">保存自动推送</button>
+  </div>
+  {% if brief_push_stats.logs %}
+  <table style="margin-top:12px">
+    <tr><th>时间</th><th>渠道</th><th>状态</th><th>错误</th><th>载荷</th></tr>
+    {% for l in brief_push_stats.logs[:5] %}
+    <tr>
+      <td style="font-size:12px;color:var(--t2)">{{l.created_at[:16]}}</td>
+      <td>{{l.channel_name}}</td>
+      <td><span class="badge {{'b-ok' if l.status=='ok' else 'b-err'}}">{{'成功' if l.status=='ok' else '失败'}}</span></td>
+      <td style="font-size:12px;color:var(--err)">{{l.error or '—'}}</td>
+      <td class="mono">{{l.payload[:80]}}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
 {% if briefs %}{% for b in briefs %}
 <div class="card">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -88,5 +124,13 @@ async function sendBrief(idx){
   const d=await api('/api/briefs/send',{channel_id:channel.value,filename:file.value});
   if(d.ok)flash(document.getElementById('flash'),'简报已推送');
   else flash(document.getElementById('flash'),d.error||'推送失败',false);
+}
+async function saveBriefPushConfig(){
+  const d=await api('/api/config',{
+    'brief.push.enabled':document.getElementById('brief-push-enabled').checked?'true':'false',
+    'brief.push.format':document.getElementById('brief-push-format').value
+  });
+  if(d.ok)flash(document.getElementById('flash'),'自动推送配置已保存');
+  else flash(document.getElementById('flash'),d.error||'保存失败',false);
 }
 </script>{% endblock %}

@@ -1356,6 +1356,65 @@ class RegressionTests(unittest.TestCase):
 
         send.assert_called_once_with(limit=4, days=2, skip_sent=True, dedupe_days=7)
 
+    def test_run_scheduled_brief_can_auto_push_generated_brief(self):
+        cfg.set_many({
+            "brief.push.enabled": "true",
+            "brief.push.format": "md",
+        })
+        channel_id = storage.save_notification_channel({
+            "name": "简报自动推送",
+            "channel_type": "webhook",
+            "target": "https://example.com/brief-hook",
+            "enabled": True,
+        })
+
+        with patch("web.app.gen_brief", return_value="# 自动简报\n\n今日重点"), \
+             patch("web.app.send_brief_notification", return_value={"ok": True}) as send:
+            result = webapp.run_scheduled_brief()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["format"], "md")
+        self.assertEqual(result["sent"], 1)
+        send.assert_called_once()
+        self.assertEqual(send.call_args.args[0], channel_id)
+        self.assertTrue(send.call_args.args[1].endswith(".md"))
+
+    def test_setup_scheduler_registers_auto_brief_push_job(self):
+        cfg.set_config("schedule.rss_time", "")
+        cfg.set_config("schedule.brief_time", "21:00")
+        cfg.set_config("brief.push.enabled", "true")
+        cfg.set_config("notify.push.enabled", "false")
+
+        with patch("web.app.schedule.clear") as clear, \
+             patch("web.app.schedule.every") as every:
+            every.return_value.day.at.return_value.do.return_value.tag.return_value = None
+            count = webapp.setup_scheduler(start_thread=False)
+
+        clear.assert_called_once_with("news_agent")
+        self.assertEqual(count, 1)
+        every.return_value.day.at.assert_called_once_with("21:00")
+        every.return_value.day.at.return_value.do.assert_called_once_with(webapp.run_scheduled_brief)
+
+    def test_briefs_page_shows_brief_push_stats_and_schedule_controls(self):
+        storage.save_notification_channel({
+            "name": "简报统计 Webhook",
+            "channel_type": "webhook",
+            "target": "https://example.com/brief-stats",
+            "enabled": True,
+        })
+        storage.record_notification_log(1, None, "ok", '{"type":"brief","filename":"brief-2026-05-25.md"}')
+        storage.record_notification_log(1, None, "error", '{"type":"brief","filename":"brief-2026-05-26.md"}', "失败")
+
+        resp = self.client.get("/briefs")
+        html = resp.get_data(as_text=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("简报推送效果", html)
+        self.assertIn("brief.push.enabled", html)
+        self.assertIn("自动推送简报", html)
+        self.assertIn("发送成功", html)
+        self.assertIn("发送失败", html)
+
     def test_setup_scheduler_registers_notification_push_job(self):
         cfg.set_config("schedule.rss_time", "")
         cfg.set_config("schedule.brief_time", "")
@@ -1599,6 +1658,22 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(quality["https://example.com/bad.xml"]["diagnosis"], "格式错误")
         self.assertIn("停用", quality["https://example.com/bad.xml"]["suggestion"])
 
+    def test_rss_quality_scores_include_governance_action_and_recovery_hint(self):
+        cfg.set_rss_sources([
+            {"name": "坏源", "url": "https://example.com/bad.xml", "category": "其他", "enabled": True},
+            {"name": "恢复源", "url": "https://example.com/recovered.xml", "category": "科技/AI", "enabled": False},
+        ])
+        for _ in range(5):
+            storage.record_rss_fetch("https://example.com/bad.xml", False, error="Connection timed out")
+        storage.record_rss_fetch("https://example.com/recovered.xml", True, item_count=3)
+
+        quality = {q["feed_url"]: q for q in storage.get_rss_quality_scores(days=7)}
+
+        self.assertEqual(quality["https://example.com/bad.xml"]["governance_action"], "disable_candidate")
+        self.assertIn("连续失败", quality["https://example.com/bad.xml"]["governance_reason"])
+        self.assertEqual(quality["https://example.com/recovered.xml"]["governance_action"], "re_enable_candidate")
+        self.assertIn("可重新启用", quality["https://example.com/recovered.xml"]["governance_reason"])
+
     def test_rss_page_shows_quality_score_diagnosis_and_suggestion(self):
         cfg.set_rss_sources([
             {"name": "坏源", "url": "https://example.com/bad.xml", "category": "其他", "enabled": True},
@@ -1614,6 +1689,21 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("质量分", html)
         self.assertIn("诊断", html)
         self.assertIn("建议", html)
+
+    def test_rss_page_shows_governance_action_and_reason(self):
+        cfg.set_rss_sources([
+            {"name": "坏源", "url": "https://example.com/bad.xml", "category": "其他", "enabled": True},
+        ])
+        for _ in range(5):
+            storage.record_rss_fetch("https://example.com/bad.xml", False, error="Connection timed out")
+
+        resp = self.client.get("/rss")
+        html = resp.get_data(as_text=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("治理动作", html)
+        self.assertIn("建议停用候选", html)
+        self.assertIn("连续失败", html)
 
     def test_fetch_all_rss_skips_low_quality_sources_by_default(self):
         cfg.set_rss_sources([

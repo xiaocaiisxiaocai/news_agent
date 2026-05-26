@@ -80,6 +80,8 @@ DEFAULTS = {
     # 简报
     "brief.top_n":        "5",
     "brief.min_importance": "3",
+    "brief.push.enabled": "false",
+    "brief.push.format": "md",
 
     # 定时
     "schedule.rss_time":   "08:30",

@@ -119,10 +119,9 @@ def _run_rss_job(jid):
 def _run_brief_job(jid, fmt="md"):
     try:
         job_log(jid, "生成简报...")
-        content = gen_brief_html() if fmt == "html" else gen_brief()
-        path = save_brief(content, fmt=fmt, output_dir=_BRIEFS_DIR)
-        job_log(jid, f"✓ 已保存：{path}")
-        job_done(jid, {"path": path, "content": content, "format": fmt})
+        result = generate_brief_file(fmt)
+        job_log(jid, f"✓ 已保存：{result['path']}")
+        job_done(jid, result)
     except Exception as e:
         job_log(jid, f"✗ {e}")
         job_err(jid, e)
@@ -458,6 +457,30 @@ def send_brief_notification(channel_id: int, filename: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def generate_brief_file(fmt: str = "md") -> dict:
+    fmt = "html" if fmt == "html" else "md"
+    content = gen_brief_html() if fmt == "html" else gen_brief()
+    path = save_brief(content, fmt=fmt, output_dir=_BRIEFS_DIR)
+    return {"path": path, "filename": Path(path).name, "content": content, "format": fmt}
+
+
+def get_brief_push_stats(limit: int = 20) -> dict:
+    logs = [
+        log for log in get_notification_logs(limit=max(limit * 3, 60))
+        if '"type": "brief"' in (log.get("payload") or "") or '"type":"brief"' in (log.get("payload") or "")
+    ][:limit]
+    sent = sum(1 for log in logs if log.get("status") == "ok")
+    failed = sum(1 for log in logs if log.get("status") == "error")
+    return {
+        "sent": sent,
+        "failed": failed,
+        "total": sent + failed,
+        "last_success_at": next((l.get("created_at") for l in logs if l.get("status") == "ok"), ""),
+        "last_failure_at": next((l.get("created_at") for l in logs if l.get("status") == "error"), ""),
+        "logs": logs,
+    }
+
+
 def classify_rss_error(error: str = "", status: str = "") -> str:
     """把底层错误归类为页面可读原因。"""
     err = (error or "").lower()
@@ -492,9 +515,31 @@ def run_scheduled_rss():
 
 
 def run_scheduled_brief():
-    jid = new_job("schedule-brief")
-    job_log(jid, "定时任务触发")
-    threading.Thread(target=_run_brief_job, args=(jid, "md"), daemon=True).start()
+    fmt = cfg.get("brief.push.format", "md").strip().lower()
+    fmt = "html" if fmt == "html" else "md"
+    result = generate_brief_file(fmt)
+    sent = failed = 0
+    errors = []
+    if cfg.get_bool("brief.push.enabled"):
+        channels = get_notification_channels(enabled_only=True)
+        for channel in channels:
+            send_result = send_brief_notification(channel["id"], result["filename"])
+            if send_result.get("ok"):
+                sent += 1
+            else:
+                failed += 1
+                errors.append(send_result.get("error", "推送失败"))
+    output = {
+        "ok": failed == 0,
+        "format": fmt,
+        "path": result["path"],
+        "filename": result["filename"],
+        "sent": sent,
+        "failed": failed,
+        "errors": errors,
+    }
+    logger.info(f"定时简报完成: {output}")
+    return output
 
 
 def run_scheduled_push():
@@ -663,7 +708,9 @@ def briefs_page():
                 item["content"] = content
     briefs = sorted(brief_map.values(), key=lambda b: b["date"], reverse=True)[:30]
     return render_template("briefs.html", briefs=briefs,
-                           channels=get_notification_channels(enabled_only=True))
+                           channels=get_notification_channels(enabled_only=True),
+                           brief_push_stats=get_brief_push_stats(),
+                           brief_cfg=cfg.get_all())
 
 
 @app.route("/notifications")
@@ -1158,7 +1205,7 @@ def api_config_set():
     errors = cfg.set_many(filtered)
     if errors:
         return jsonify({"ok": False, "saved": len(filtered) - len(errors), "errors": errors}), 400
-    if any(k.startswith("schedule.") for k in filtered):
+    if any(k.startswith("schedule.") or k.startswith("brief.push.") for k in filtered):
         setup_scheduler()
     return jsonify({"ok": True, "saved": len(filtered)})
 

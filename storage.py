@@ -6,6 +6,7 @@ import sqlite3, hashlib, json, os, logging, re
 from datetime import datetime, date
 from contextlib import contextmanager
 from config_store import DB_PATH
+import config_store as cfg
 
 logger = logging.getLogger("storage")
 
@@ -801,6 +802,7 @@ def classify_rss_quality_error(error: str = "", status: str = "") -> str:
 
 
 def get_rss_quality_scores(days: int = 7) -> list:
+    sources = {s["url"]: s for s in cfg.get_rss_sources()}
     with _conn() as c:
         rows = c.execute("""
             SELECT h.*,
@@ -842,10 +844,31 @@ def get_rss_quality_scores(days: int = 7) -> list:
             suggestion = "建议观察，必要时降低优先级"
         else:
             suggestion = "可正常使用"
+        source = sources.get(item.get("feed_url"), {})
+        enabled = source.get("enabled", True) is not False
+        if enabled and (item.get("status") == "dead" or failures >= 5 or score < 40):
+            governance_action = "disable_candidate"
+            governance_label = "建议停用候选"
+            governance_reason = f"连续失败 {failures} 次，质量分 {score}，建议暂停后替换或人工复测"
+        elif not enabled and item.get("status") == "ok" and total_items > 0:
+            governance_action = "re_enable_candidate"
+            governance_label = "可重新启用"
+            governance_reason = f"最近测试成功并获取 {total_items} 篇，可重新启用观察"
+        elif enabled and score < 75:
+            governance_action = "watch"
+            governance_label = "继续观察"
+            governance_reason = f"质量分 {score}，诊断为{diagnosis}"
+        else:
+            governance_action = "keep"
+            governance_label = "保持启用"
+            governance_reason = "质量稳定，可正常抓取"
         item.update({
             "quality_score": score,
             "diagnosis": diagnosis,
             "suggestion": suggestion,
+            "governance_action": governance_action,
+            "governance_label": governance_label,
+            "governance_reason": governance_reason,
             "recent_article_count": int(item.get("recent_article_count") or 0),
             "avg_importance": float(item.get("avg_importance") or 0),
         })

@@ -197,6 +197,15 @@
       <input id="sched-rss" value="{{ all_cfg.get('schedule.rss_time','08:30') }}" placeholder="08:30"></div>
     <div class="field"><label>定时生成简报时间（HH:MM）</label>
       <input id="sched-brief" value="{{ all_cfg.get('schedule.brief_time','21:00') }}" placeholder="21:00"></div>
+    <div class="field"><label>简报推送格式</label>
+      <select id="brief-push-format">
+        <option value="md" {{'selected' if all_cfg.get('brief.push.format','md')=='md' else ''}}>Markdown</option>
+        <option value="html" {{'selected' if all_cfg.get('brief.push.format','md')=='html' else ''}}>HTML</option>
+      </select></div>
+  </div>
+  <div class="row" style="margin-bottom:12px">
+    <input type="checkbox" id="brief-push-enabled" class="shrink" style="width:auto" {{ 'checked' if all_cfg.get('brief.push.enabled')=='true' else '' }}>
+    <label for="brief-push-enabled" style="margin:0">定时生成简报后自动推送到所有启用通知渠道</label>
   </div>
   <button class="btn-p" onclick="saveBrief()">保存</button>
 </div>
@@ -363,6 +372,8 @@ async function saveBrief(){
   await api('/api/config', {
     'brief.top_n':          document.getElementById('brief-n').value,
     'brief.min_importance': document.getElementById('brief-imp').value,
+    'brief.push.enabled':   document.getElementById('brief-push-enabled').checked ? 'true' : 'false',
+    'brief.push.format':    document.getElementById('brief-push-format').value,
     'schedule.rss_time':    document.getElementById('sched-rss').value,
     'schedule.brief_time':  document.getElementById('sched-brief').value,
   });
