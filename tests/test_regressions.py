@@ -229,6 +229,66 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("相似", target["recommend_reason"])
         self.assertIn("隐藏", target["recommend_reason"])
 
+    def test_recommendation_explanation_api_returns_breakdown_and_memory_sources(self):
+        self.save_article(
+            "解释来源 GPT",
+            "https://example.com/explain-source",
+            "科技/AI",
+            4,
+            "GPT 模型推理",
+            keywords=["GPT", "模型", "推理"],
+        )
+        self.save_article(
+            "解释目标 GPT",
+            "https://example.com/explain-target",
+            "科技/AI",
+            3,
+            "GPT 模型能力更新",
+            keywords=["GPT", "模型"],
+        )
+        articles = {a["title"]: a for a in storage.get_articles(days=1, limit=10)}
+        storage.record_article_event(articles["解释来源 GPT"]["id"], "favorite")
+
+        resp = self.client.get(f"/api/articles/{articles['解释目标 GPT']['id']}/recommendation-explanation")
+        data = resp.get_json()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(data["base_score"], 30)
+        self.assertGreater(data["memory_score"], 0)
+        self.assertEqual(data["recommend_score"], data["base_score"] + data["feedback_score"] + data["memory_score"])
+        self.assertEqual(data["memory_sources"][0]["title"], "解释来源 GPT")
+        self.assertIn("收藏", data["memory_sources"][0]["event_label"])
+
+    def test_preference_profile_api_summarizes_positive_and_negative_topics(self):
+        self.save_article(
+            "偏好 GPT",
+            "https://example.com/profile-like",
+            "科技/AI",
+            4,
+            "GPT 模型推理",
+            keywords=["GPT", "模型"],
+        )
+        self.save_article(
+            "排斥广告",
+            "https://example.com/profile-hide",
+            "商业",
+            3,
+            "广告营销",
+            keywords=["广告", "营销"],
+        )
+        articles = {a["title"]: a for a in storage.get_articles(days=1, limit=10)}
+        storage.record_article_event(articles["偏好 GPT"]["id"], "favorite")
+        storage.record_article_event(articles["排斥广告"]["id"], "hide")
+
+        resp = self.client.get("/api/preferences/profile?days=1")
+        data = resp.get_json()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("GPT", [t["term"] for t in data["positive_topics"]])
+        self.assertIn("广告", [t["term"] for t in data["negative_topics"]])
+        self.assertGreater(data["behavior_counts"]["favorite"], 0)
+        self.assertGreater(data["behavior_counts"]["hide"], 0)
+
     def test_notification_channel_crud_and_send_webhook_records_log(self):
         channel_id = storage.save_notification_channel({
             "name": "测试 Webhook",
@@ -896,6 +956,40 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("记忆相似文章", html)
         self.assertIn("详情相似文章", html)
+
+    def test_article_detail_page_shows_recommendation_explanation(self):
+        self.save_article("详情解释文章", "https://example.com/detail-explain", "科技/AI", 4, "Explain")
+        article = storage.get_articles(days=1, limit=1)[0]
+        storage.record_article_event(article["id"], "favorite")
+
+        resp = self.client.get(f"/article/{article['id']}")
+        html = resp.get_data(as_text=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("推荐解释", html)
+        self.assertIn("基础分", html)
+        self.assertIn("反馈分", html)
+        self.assertIn("记忆分", html)
+
+    def test_preferences_profile_page_renders_learned_topics(self):
+        self.save_article(
+            "页面偏好 GPT",
+            "https://example.com/profile-page-like",
+            "科技/AI",
+            4,
+            "GPT 模型",
+            keywords=["GPT", "模型"],
+        )
+        article = storage.get_articles(days=1, limit=1)[0]
+        storage.record_article_event(article["id"], "favorite")
+
+        resp = self.client.get("/preferences")
+        html = resp.get_data(as_text=True)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("偏好画像", html)
+        self.assertIn("正向主题", html)
+        self.assertIn("GPT", html)
 
     def test_send_recommended_notifications_sends_top_articles_to_enabled_channels(self):
         channel_id = storage.save_notification_channel({

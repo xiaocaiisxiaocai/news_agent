@@ -19,6 +19,33 @@
   {% if article.action and article.action!='无' %}<div style="font-size:13px;color:var(--info);padding:8px 12px;background:rgba(26,111,184,.06);border-radius:var(--r);margin-bottom:12px">⚡ {{article.action}}</div>{% endif %}
   {% if article.keywords %}<div>{% for k in article.keywords %}<span class="tag">{{k}}</span>{% endfor %}</div>{% endif %}
 </div>
+{% if explanation %}
+<div class="card">
+  <h2>推荐解释</h2>
+  <div class="grid4" style="margin-bottom:12px">
+    <div class="stat"><div class="stat-l">推荐分</div><div class="stat-v">{{explanation.recommend_score}}</div><div class="stat-m">{{explanation.recommend_reason}}</div></div>
+    <div class="stat"><div class="stat-l">基础分</div><div class="stat-v">{{explanation.base_score}}</div><div class="stat-m">{{explanation.base_reason}}</div></div>
+    <div class="stat"><div class="stat-l">反馈分</div><div class="stat-v">{{explanation.feedback_score}}</div><div class="stat-m">打开 {{explanation.feedback_counts.get('open',0)}} / 收藏 {{explanation.feedback_counts.get('favorite',0)}} / 隐藏 {{explanation.feedback_counts.get('hide',0)}}</div></div>
+    <div class="stat"><div class="stat-l">记忆分</div><div class="stat-v">{{explanation.memory_score}}</div><div class="stat-m">来自相似历史行为</div></div>
+  </div>
+  {% if explanation.memory_sources %}
+  <table>
+    <tr><th>历史文章</th><th>行为</th><th>相似度</th><th>影响</th><th>重叠主题</th></tr>
+    {% for s in explanation.memory_sources %}
+    <tr>
+      <td><a href="/article/{{s.id}}">{{s.title}}</a></td>
+      <td>{{s.event_label}}</td>
+      <td>{{(s.similarity*100)|int}}%</td>
+      <td>{{s.score_delta}}</td>
+      <td>{% for k in s.overlap_keywords %}<span class="tag">{{k}}</span>{% endfor %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty" style="padding:12px 0;text-align:left">暂无相似历史行为，当前主要按重要性和直接反馈排序。</div>
+  {% endif %}
+</div>
+{% endif %}
 <div class="card">
   <h2>推送本文</h2>
   {% if channels %}

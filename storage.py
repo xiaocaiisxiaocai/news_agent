@@ -373,6 +373,12 @@ def _event_memory_profiles() -> list[tuple[dict, str, int]]:
 
 
 def _memory_score_for_article(article: dict, profiles: list[tuple[dict, str, int]]) -> tuple[int, str]:
+    score, reason, _sources = _memory_score_parts_for_article(article, profiles, include_sources=False)
+    return score, reason
+
+
+def _memory_score_parts_for_article(article: dict, profiles: list[tuple[dict, str, int]],
+                                    include_sources: bool = True) -> tuple[int, str, list[dict]]:
     total = 0.0
     positive_reason = ""
     negative_reason = ""
@@ -380,6 +386,7 @@ def _memory_score_for_article(article: dict, profiles: list[tuple[dict, str, int
     negative_rank = {"hide": 2, "not_interested": 1}
     best_positive = (0.0, 0, "")
     best_negative = (0.0, 0, "")
+    sources = []
 
     for memory_article, event_type, weight in profiles:
         if memory_article["id"] == article["id"]:
@@ -398,13 +405,25 @@ def _memory_score_for_article(article: dict, profiles: list[tuple[dict, str, int
             rank = negative_rank.get(event_type, 0)
             if (similarity, rank) > (best_negative[0], best_negative[1]):
                 best_negative = (similarity, rank, f"与{_event_label(event_type)}文章相似：{words}")
+        if include_sources:
+            sources.append({
+                "id": memory_article["id"],
+                "title": memory_article["title"],
+                "event_type": event_type,
+                "event_label": _event_label(event_type),
+                "weight": weight,
+                "similarity": similarity,
+                "score_delta": round(weighted, 2),
+                "overlap_keywords": overlap,
+            })
 
     score = int(round(total))
     if best_positive[2] and score > 0:
         positive_reason = best_positive[2]
     if best_negative[2] and score < 0:
         negative_reason = best_negative[2]
-    return score, positive_reason or negative_reason
+    sources.sort(key=lambda s: abs(s["score_delta"]), reverse=True)
+    return score, positive_reason or negative_reason, sources[:5]
 
 
 def _event_label(event_type: str) -> str:
@@ -429,6 +448,82 @@ def _recommend_reason(article: dict, memory_reason: str) -> str:
     if memory_reason:
         reasons.append(memory_reason)
     return "；".join(reasons) or "按时间和重要性推荐"
+
+
+def explain_article_recommendation(article_id: int) -> dict | None:
+    article = get_article(article_id)
+    if not article:
+        return None
+    counts = get_article_event_counts(article_id)
+    feedback_score = 0
+    for event_type, count in counts.items():
+        feedback_score += EVENT_WEIGHTS.get(event_type, 0) * int(count)
+    base_score = int(article.get("importance") or 0) * 10
+    memory_score, memory_reason, sources = _memory_score_parts_for_article(article, _event_memory_profiles())
+    recommend_score = base_score + feedback_score + memory_score
+    article.update({
+        "base_score": base_score,
+        "feedback_score": feedback_score,
+        "memory_score": memory_score,
+        "recommend_score": recommend_score,
+        "recommend_reason": _recommend_reason(article | {"feedback_score": feedback_score}, memory_reason),
+        "open_count": counts.get("open", 0),
+        "favorite_count": counts.get("favorite", 0),
+        "hide_count": counts.get("hide", 0),
+        "not_interested_count": counts.get("not_interested", 0),
+    })
+    return {
+        "article_id": article_id,
+        "title": article["title"],
+        "base_score": base_score,
+        "feedback_score": feedback_score,
+        "memory_score": memory_score,
+        "recommend_score": recommend_score,
+        "recommend_reason": article["recommend_reason"],
+        "base_reason": f"重要性 {article.get('importance', 0)} × 10",
+        "feedback_counts": counts,
+        "memory_sources": sources,
+    }
+
+
+def get_preference_profile(days: int = 30, limit: int = 12) -> dict:
+    with _conn() as c:
+        rows = c.execute("""
+            SELECT a.*, e.event_type, e.weight
+            FROM article_events e
+            JOIN articles a ON a.id = e.article_id
+            WHERE date(e.created_at) >= date('now', ?)
+            ORDER BY e.created_at DESC
+        """, (f"-{int(days)} days",)).fetchall()
+    positive: dict[str, float] = {}
+    negative: dict[str, float] = {}
+    categories: dict[str, float] = {}
+    behavior_counts: dict[str, int] = {}
+
+    for row in rows:
+        article = _art_dict(row)
+        event_type = row["event_type"]
+        weight = int(row["weight"] or 0)
+        behavior_counts[event_type] = behavior_counts.get(event_type, 0) + 1
+        target = positive if weight > 0 else negative
+        for keyword in article.get("keywords") or []:
+            term = str(keyword).strip()
+            if term:
+                target[term] = target.get(term, 0) + abs(weight)
+        category = article.get("category") or "其他"
+        categories[category] = categories.get(category, 0) + weight
+
+    def top_items(items: dict[str, float]) -> list[dict]:
+        ranked = sorted(items.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)[:int(limit)]
+        return [{"term": term, "score": round(score, 2)} for term, score in ranked]
+
+    return {
+        "days": int(days),
+        "behavior_counts": behavior_counts,
+        "positive_topics": top_items(positive),
+        "negative_topics": top_items(negative),
+        "category_weights": top_items(categories),
+    }
 
 
 def get_recommended_articles(days=7, limit=20, offset=0, category="", min_importance=0, search="") -> list:

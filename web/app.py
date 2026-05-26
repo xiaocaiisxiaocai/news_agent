@@ -23,6 +23,7 @@ from storage import (
     get_eval_stats, get_rss_health, get_active_topics, record_rss_fetch,
     count_articles, cache_stats, cache_clear, record_article_event,
     get_recommended_articles, get_article_event_counts, find_similar_articles,
+    explain_article_recommendation, get_preference_profile,
     save_notification_channel, get_notification_channels, get_notification_channel,
     delete_notification_channel, record_notification_log, has_successful_notification,
     get_notification_logs, get_notification_stats,
@@ -518,7 +519,9 @@ def article_detail(aid):
         logger.warning(f"记录文章打开事件失败: {e}")
     related = find_similar_articles(aid, limit=5, days=30) or find_related(art, days=30, top_k=5)
     channels = get_notification_channels(enabled_only=True)
-    return render_template("article_detail.html", article=art, related=related, channels=channels)
+    explanation = explain_article_recommendation(aid)
+    return render_template("article_detail.html", article=art, related=related,
+                           channels=channels, explanation=explanation)
 
 
 @app.route("/process")
@@ -554,6 +557,12 @@ def quality_page():
 @app.route("/settings")
 def settings_page():
     return render_template("settings.html", all_cfg=cfg.get_all())
+
+
+@app.route("/preferences")
+def preferences_page():
+    days = int(request.args.get("days", 30))
+    return render_template("preferences.html", profile=get_preference_profile(days=days), days=days)
 
 
 @app.route("/briefs")
@@ -816,6 +825,14 @@ def api_recommendations():
     days = int(request.args.get("days", 7))
     limit = int(request.args.get("limit", 20))
     return jsonify(get_recommended_articles(days=days, limit=limit))
+
+
+@app.route("/api/articles/<int:aid>/recommendation-explanation")
+def api_article_recommendation_explanation(aid):
+    explanation = explain_article_recommendation(aid)
+    if not explanation:
+        return jsonify({"error": "文章不存在"}), 404
+    return jsonify(explanation)
 
 
 @app.route("/api/articles/<int:aid>/event", methods=["POST"])
@@ -1097,6 +1114,13 @@ def api_rss_feeds_set():
 @app.route("/api/preferences", methods=["GET"])
 def api_prefs_get():
     return jsonify(cfg.get_preferences())
+
+
+@app.route("/api/preferences/profile")
+def api_preferences_profile():
+    days = int(request.args.get("days", 30))
+    limit = int(request.args.get("limit", 12))
+    return jsonify(get_preference_profile(days=days, limit=limit))
 
 
 @app.route("/api/preferences", methods=["POST"])

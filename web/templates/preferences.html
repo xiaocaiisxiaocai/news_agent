@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}偏好画像{% endblock %}
+{% block content %}
+<h1>偏好画像</h1>
+<p class="sub">基于打开、点击、收藏、隐藏和不感兴趣行为生成，本地计算，不调用外部接口</p>
+
+<div class="card">
+  <form method="get" class="row" style="margin:0">
+    <div class="field shrink" style="margin:0">
+      <label>统计范围（天）</label>
+      <input type="number" name="days" value="{{days}}" min="1" max="365" style="width:96px">
+    </div>
+    <button class="btn-p shrink" style="align-self:flex-end" type="submit">刷新画像</button>
+    <a class="btn shrink" style="align-self:flex-end" href="/settings">调整显式偏好</a>
+  </form>
+</div>
+
+<div class="grid4">
+  {% for event,label in [('open','打开'),('click','点击'),('favorite','收藏'),('hide','隐藏')] %}
+  <div class="stat">
+    <div class="stat-l">{{label}}</div>
+    <div class="stat-v">{{profile.behavior_counts.get(event, 0)}}</div>
+    <div class="stat-m">最近 {{profile.days}} 天</div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>正向主题</h2>
+    {% if profile.positive_topics %}
+    <table>
+      <tr><th>主题</th><th>权重</th></tr>
+      {% for t in profile.positive_topics %}
+      <tr><td><span class="tag">{{t.term}}</span></td><td>{{t.score}}</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty">还没有足够的正向行为</div>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h2>负向主题</h2>
+    {% if profile.negative_topics %}
+    <table>
+      <tr><th>主题</th><th>权重</th></tr>
+      {% for t in profile.negative_topics %}
+      <tr><td><span class="tag">{{t.term}}</span></td><td>{{t.score}}</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty">还没有足够的负向行为</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>分类倾向</h2>
+  {% if profile.category_weights %}
+  <table>
+    <tr><th>分类</th><th>净权重</th></tr>
+    {% for c in profile.category_weights %}
+    <tr><td>{{c.term}}</td><td>{{c.score}}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">暂无分类行为数据</div>
+  {% endif %}
+</div>
+{% endblock %}
