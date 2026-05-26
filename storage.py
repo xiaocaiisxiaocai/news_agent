@@ -110,6 +110,44 @@ def init_db():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_cache_dt ON llm_cache(created_at)")
 
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS article_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                article_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                weight     INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_article_events_article ON article_events(article_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_article_events_type ON article_events(event_type)")
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS notification_channels (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                name         TEXT NOT NULL,
+                channel_type TEXT NOT NULL,
+                target       TEXT NOT NULL,
+                enabled      INTEGER DEFAULT 1,
+                created_at   TEXT NOT NULL,
+                updated_at   TEXT NOT NULL
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_notify_channels_enabled ON notification_channels(enabled)")
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS notification_logs (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id INTEGER,
+                article_id INTEGER,
+                status     TEXT NOT NULL,
+                payload    TEXT DEFAULT '',
+                error      TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_notify_logs_channel ON notification_logs(channel_id)")
+
 
 # ── 去重工具 ─────────────────────────────────────────────
 
@@ -174,11 +212,11 @@ def save_article(art: dict) -> bool:
 def _looks_garbled_title(title: str) -> bool:
     if not title:
         return False
-    question_count = title.count("?")
-    if question_count < 3:
+    garbled_count = title.count("?") + title.count("\ufffd")
+    if garbled_count < 3:
         return False
     visible_len = len(title.strip())
-    return question_count / max(visible_len, 1) >= 0.35
+    return garbled_count / max(visible_len, 1) >= 0.35
 
 
 # ── 查询文章 ─────────────────────────────────────────────
@@ -187,10 +225,7 @@ def _article_filter_sql(days=7, category="", min_importance=0, search="") -> tup
     clauses = ["date(created_at) >= date('now', ?)"]
     params  = [f"-{int(days)} days"]
     if category:
-        # 白名单校验防止SQL注入
-        valid_cats = ["科技/AI", "商业", "学术", "即刻", "B站", "其他"]
-        if category in valid_cats:
-            clauses.append("category=?"); params.append(category)
+        clauses.append("category=?"); params.append(category)
     if min_importance:
         clauses.append("importance>=?"); params.append(int(min_importance))
     if search:
@@ -206,6 +241,65 @@ def get_articles(days=7, limit=100, offset=0, category="", min_importance=0, sea
             f"SELECT * FROM articles WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
             params + [int(limit), int(offset)]
         ).fetchall()
+    return [_art_dict(r) for r in rows]
+
+
+EVENT_WEIGHTS = {
+    "open": 1,
+    "click": 2,
+    "favorite": 5,
+    "share": 3,
+    "hide": -30,
+    "not_interested": -20,
+}
+
+
+def record_article_event(article_id: int, event_type: str) -> int:
+    if event_type not in EVENT_WEIGHTS:
+        raise ValueError(f"不支持的行为类型: {event_type}")
+    now = datetime.now().isoformat()
+    with _conn() as c:
+        cur = c.execute("""
+            INSERT INTO article_events (article_id,event_type,weight,created_at)
+            VALUES (?,?,?,?)
+        """, (int(article_id), event_type, EVENT_WEIGHTS[event_type], now))
+        return cur.lastrowid
+
+
+def get_article_event_counts(article_id: int) -> dict:
+    with _conn() as c:
+        rows = c.execute("""
+            SELECT event_type, COUNT(*) cnt FROM article_events
+            WHERE article_id=?
+            GROUP BY event_type
+        """, (int(article_id),)).fetchall()
+    return {r["event_type"]: r["cnt"] for r in rows}
+
+
+def get_recommended_articles(days=7, limit=20, offset=0, category="", min_importance=0, search="") -> list:
+    where, params = _article_filter_sql(days, category, min_importance, search)
+    where = where.replace("created_at", "a.created_at")
+    where = where.replace("category=?", "a.category=?")
+    where = where.replace("importance>=?", "a.importance>=?")
+    where = where.replace("title LIKE ?", "a.title LIKE ?")
+    where = where.replace("conclusion LIKE ?", "a.conclusion LIKE ?")
+    with _conn() as c:
+        rows = c.execute(f"""
+            SELECT a.*,
+                   a.importance * 10 AS base_score,
+                   COALESCE(SUM(e.weight), 0) AS feedback_score,
+                   a.importance * 10 + COALESCE(SUM(e.weight), 0) AS recommend_score,
+                   SUM(CASE WHEN e.event_type='open' THEN 1 ELSE 0 END) AS open_count,
+                   SUM(CASE WHEN e.event_type='favorite' THEN 1 ELSE 0 END) AS favorite_count,
+                   SUM(CASE WHEN e.event_type='hide' THEN 1 ELSE 0 END) AS hide_count,
+                   SUM(CASE WHEN e.event_type='not_interested' THEN 1 ELSE 0 END) AS not_interested_count
+            FROM articles a
+            LEFT JOIN article_events e ON e.article_id = a.id
+            WHERE {where}
+            GROUP BY a.id
+            ORDER BY recommend_score DESC, a.created_at DESC
+            LIMIT ? OFFSET ?
+        """, params + [int(limit), int(offset)]).fetchall()
     return [_art_dict(r) for r in rows]
 
 
@@ -336,9 +430,14 @@ def get_rss_health() -> list:
 
 # ── LLM 缓存 ─────────────────────────────────────────────
 
-def cache_get(key: str) -> str | None:
+def cache_get(key: str, max_age_days: int | None = None) -> str | None:
     with _conn() as c:
-        row = c.execute("SELECT response FROM llm_cache WHERE cache_key=?", (key,)).fetchone()
+        sql = "SELECT response FROM llm_cache WHERE cache_key=?"
+        params = [key]
+        if max_age_days is not None:
+            sql += " AND datetime(created_at) >= datetime('now', ?)"
+            params.append(f"-{int(max_age_days)} days")
+        row = c.execute(sql, params).fetchone()
         if row:
             c.execute("UPDATE llm_cache SET hit_count=hit_count+1 WHERE cache_key=?", (key,))
             return row["response"]
@@ -364,6 +463,196 @@ def cache_stats() -> dict:
             "SELECT COUNT(*) total, SUM(hit_count) hits FROM llm_cache"
         ).fetchone()
     return {"total_entries": row["total"] or 0, "total_hits": row["hits"] or 0}
+
+
+# ── 通知渠道与发送日志 ─────────────────────────────────────
+
+def save_notification_channel(channel: dict) -> int:
+    channel_type = str(channel.get("channel_type") or "").strip()
+    if channel_type not in ("email", "webhook"):
+        raise ValueError("通知渠道仅支持 email 或 webhook")
+    now = datetime.now().isoformat()
+    enabled = 1 if channel.get("enabled", True) else 0
+    with _conn() as c:
+        channel_id = channel.get("id")
+        if channel_id:
+            c.execute("""
+                UPDATE notification_channels
+                SET name=?, channel_type=?, target=?, enabled=?, updated_at=?
+                WHERE id=?
+            """, (
+                str(channel.get("name") or channel_type).strip(),
+                channel_type,
+                str(channel.get("target") or "").strip(),
+                enabled,
+                now,
+                int(channel_id),
+            ))
+            return int(channel_id)
+        cur = c.execute("""
+            INSERT INTO notification_channels
+            (name,channel_type,target,enabled,created_at,updated_at)
+            VALUES (?,?,?,?,?,?)
+        """, (
+            str(channel.get("name") or channel_type).strip(),
+            channel_type,
+            str(channel.get("target") or "").strip(),
+            enabled,
+            now,
+            now,
+        ))
+        return cur.lastrowid
+
+
+def get_notification_channels(enabled_only: bool = False) -> list:
+    where = "WHERE enabled=1" if enabled_only else ""
+    with _conn() as c:
+        rows = c.execute(f"""
+            SELECT c.*,
+                   t.status AS last_test_status,
+                   t.payload AS last_test_payload,
+                   t.error AS last_test_error,
+                   t.created_at AS last_test_at
+            FROM notification_channels c
+            LEFT JOIN (
+                SELECT l.* FROM notification_logs l
+                JOIN (
+                    SELECT channel_id, MAX(id) AS max_id
+                    FROM notification_logs
+                    WHERE status IN ('test_ok','test_error')
+                    GROUP BY channel_id
+                ) latest ON latest.max_id = l.id
+            ) t ON t.channel_id = c.id
+            {where}
+            ORDER BY c.id DESC
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_notification_channel(channel_id: int) -> dict | None:
+    with _conn() as c:
+        row = c.execute("SELECT * FROM notification_channels WHERE id=?", (int(channel_id),)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_notification_channel(channel_id: int) -> int:
+    with _conn() as c:
+        cur = c.execute("DELETE FROM notification_channels WHERE id=?", (int(channel_id),))
+        return cur.rowcount
+
+
+def record_notification_log(channel_id: int, article_id: int | None, status: str,
+                            payload: str = "", error: str = "") -> int:
+    with _conn() as c:
+        cur = c.execute("""
+            INSERT INTO notification_logs
+            (channel_id,article_id,status,payload,error,created_at)
+            VALUES (?,?,?,?,?,?)
+        """, (
+            int(channel_id) if channel_id else None,
+            int(article_id) if article_id else None,
+            status,
+            payload[:5000],
+            error[:1000],
+            datetime.now().isoformat(),
+        ))
+        return cur.lastrowid
+
+
+def has_successful_notification(article_id: int, dedupe_days: int = 7,
+                                channel_id: int | None = None) -> bool:
+    params = [int(article_id), f"-{int(dedupe_days)} days"]
+    channel_clause = ""
+    if channel_id is not None:
+        channel_clause = " AND channel_id=?"
+        params.append(int(channel_id))
+    with _conn() as c:
+        row = c.execute(f"""
+            SELECT 1 FROM notification_logs
+            WHERE article_id=? AND status='ok'
+              AND datetime(created_at) >= datetime('now', ?)
+              {channel_clause}
+            LIMIT 1
+        """, params).fetchone()
+    return row is not None
+
+
+def get_notification_logs(channel_id: int | None = None, limit: int = 50,
+                          status: str = "") -> list:
+    params = []
+    clauses = []
+    if channel_id is not None:
+        clauses.append("l.channel_id=?")
+        params.append(int(channel_id))
+    if status:
+        clauses.append("l.status=?")
+        params.append(status)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    with _conn() as c:
+        rows = c.execute(f"""
+            SELECT l.*,
+                   COALESCE(c.name, '已删除渠道') AS channel_name,
+                   a.title AS article_title
+            FROM notification_logs l
+            LEFT JOIN notification_channels c ON c.id = l.channel_id
+            LEFT JOIN articles a ON a.id = l.article_id
+            {where}
+            ORDER BY l.id DESC LIMIT ?
+        """, params + [int(limit)]).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_notification_stats(days: int = 7) -> dict:
+    since = f"-{int(days)} days"
+    with _conn() as c:
+        row = c.execute("""
+            SELECT
+                SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS sent,
+                SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) AS skipped,
+                SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS failed
+            FROM notification_logs
+            WHERE datetime(created_at) >= datetime('now', ?)
+        """, (since,)).fetchone()
+        clicks = c.execute("""
+            SELECT COUNT(*) AS cnt FROM article_events
+            WHERE event_type='click' AND datetime(created_at) >= datetime('now', ?)
+        """, (since,)).fetchone()["cnt"] or 0
+        channels = c.execute("""
+            SELECT COALESCE(c.name, '已删除渠道') AS channel_name,
+                   SUM(CASE WHEN l.status='ok' THEN 1 ELSE 0 END) AS sent,
+                   SUM(CASE WHEN l.status='error' THEN 1 ELSE 0 END) AS failed,
+                   SUM(CASE WHEN l.status='skipped' THEN 1 ELSE 0 END) AS skipped
+            FROM notification_logs l
+            LEFT JOIN notification_channels c ON c.id = l.channel_id
+            WHERE datetime(l.created_at) >= datetime('now', ?)
+            GROUP BY l.channel_id, channel_name
+            ORDER BY sent DESC, failed ASC
+        """, (since,)).fetchall()
+    sent = row["sent"] or 0
+    skipped = row["skipped"] or 0
+    failed = row["failed"] or 0
+    channel_stats = []
+    for ch in channels:
+        ch_sent = ch["sent"] or 0
+        ch_failed = ch["failed"] or 0
+        attempts = ch_sent + ch_failed
+        channel_stats.append({
+            "channel_name": ch["channel_name"],
+            "sent": ch_sent,
+            "skipped": ch["skipped"] or 0,
+            "failed": ch_failed,
+            "success_rate": round(ch_sent * 100 / attempts) if attempts else 0,
+            "click_rate": round(clicks * 100 / ch_sent) if ch_sent else 0,
+        })
+    return {
+        "days": int(days),
+        "sent": sent,
+        "skipped": skipped,
+        "failed": failed,
+        "clicks": clicks,
+        "click_rate": round(clicks * 100 / sent) if sent else 0,
+        "channels": channel_stats,
+    }
 
 
 # ── 话题聚合 ─────────────────────────────────────────────

@@ -4,21 +4,28 @@
 # 访问：http://127.0.0.1:5000
 # ============================================================
 
-import os, sys, threading, uuid, logging, time, re
+import os, sys, threading, uuid, logging, time, re, json, smtplib, csv, io
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import schedule
-from flask import Flask, render_template, jsonify, request, send_from_directory, abort
+import requests
+from flask import Flask, render_template, jsonify, request, send_from_directory, abort, redirect, url_for, Response
+from urllib.parse import urlparse
 
 import config_store as cfg
 from storage import (
     init_db, get_stats, get_articles, get_article, save_article,
     get_eval_stats, get_rss_health, get_active_topics, record_rss_fetch,
-    count_articles, cache_stats, cache_clear,
+    count_articles, cache_stats, cache_clear, record_article_event,
+    get_recommended_articles, get_article_event_counts,
+    save_notification_channel, get_notification_channels, get_notification_channel,
+    delete_notification_channel, record_notification_log, has_successful_notification,
+    get_notification_logs, get_notification_stats,
 )
 from fetchers.fetch import fetch_url, from_text, fetch_all_rss, fetch_emails, fetch_rss_feed
 from processors.batch import batch_process, process_one
@@ -161,6 +168,228 @@ def _run_rss_test_job(jid):
         job_err(jid, e)
 
 
+def _tracking_url(article_id: int) -> str:
+    try:
+        return url_for("notification_click", aid=article_id, _external=True)
+    except RuntimeError:
+        host = cfg.get("web.host", "127.0.0.1")
+        port = cfg.get_int("web.port", 5000)
+        return f"http://{host}:{port}/notifications/click/{article_id}"
+
+
+def _article_notification_payload(article: dict) -> dict:
+    return {
+        "title": article.get("title", ""),
+        "url": _tracking_url(article.get("id")),
+        "original_url": article.get("url", ""),
+        "category": article.get("category", ""),
+        "importance": article.get("importance", 0),
+        "conclusion": article.get("conclusion", ""),
+        "created_at": article.get("created_at", ""),
+    }
+
+
+def _template_context(article: dict) -> dict:
+    tracking_url = _tracking_url(article.get("id"))
+    return {
+        "title": article.get("title", ""),
+        "conclusion": article.get("conclusion", ""),
+        "category": article.get("category", ""),
+        "importance": article.get("importance", 0),
+        "tracking_url": tracking_url,
+        "original_url": article.get("url", ""),
+        "created_at": article.get("created_at", ""),
+    }
+
+
+def _render_notification_template(template: str, context: dict) -> str:
+    try:
+        return template.format(**context)
+    except KeyError as e:
+        raise ValueError(f"模板变量不存在: {e.args[0]}") from e
+
+
+def _access_token_enabled() -> bool:
+    return cfg.get_bool("web.access_token.enabled") and bool(cfg.get("web.access_token", "").strip())
+
+
+def _require_access_token():
+    """可选令牌只保护会改数据或导出数据的通知接口。"""
+    if not _access_token_enabled():
+        return None
+    expected = cfg.get("web.access_token", "").strip()
+    supplied = request.headers.get("X-Access-Token", "").strip() or request.args.get("token", "").strip()
+    if supplied != expected:
+        return jsonify({"error": "访问令牌无效"}), 403
+    return None
+
+
+def build_notification_content(channel: dict, article: dict) -> dict:
+    context = _template_context(article)
+    if channel.get("channel_type") == "email":
+        subject_t = cfg.get("notify.template.email_subject", "[资讯] {title}")
+        body_t = cfg.get("notify.template.email_body", "{title}\n\n{conclusion}\n\n{tracking_url}")
+        return {
+            "channel_type": "email",
+            "subject": _render_notification_template(subject_t, context),
+            "body": _render_notification_template(body_t, context),
+            **context,
+        }
+    payload = {
+        "title": context["title"],
+        "url": context["tracking_url"],
+        "category": context["category"],
+        "importance": context["importance"],
+        "created_at": context["created_at"],
+    }
+    if cfg.get_bool("notify.template.webhook_include_summary"):
+        payload["conclusion"] = context["conclusion"]
+    if cfg.get_bool("notify.template.webhook_include_original_url"):
+        payload["original_url"] = context["original_url"]
+    return {
+        "channel_type": "webhook",
+        "payload": payload,
+        **context,
+    }
+
+
+def _email_smtp_missing() -> list:
+    if not cfg.get_bool("notify.email.enabled"):
+        return ["未启用邮件通知发送"]
+    required = [
+        ("notify.email.smtp_server", "SMTP 服务器"),
+        ("notify.email.smtp_port", "SMTP 端口"),
+        ("notify.email.from", "发件人"),
+    ]
+    return [label for key, label in required if not str(cfg.get(key, "")).strip()]
+
+
+def _validate_notification_channel(data: dict) -> tuple[bool, str]:
+    channel_type = str(data.get("channel_type") or "").strip()
+    target = str(data.get("target") or "").strip()
+    if channel_type not in ("email", "webhook"):
+        return False, "通知渠道仅支持 email 或 webhook"
+    if not str(data.get("name") or "").strip():
+        return False, "渠道名称不能为空"
+    if not target:
+        return False, "目标不能为空"
+    if channel_type == "webhook":
+        parsed = urlparse(target)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return False, "Webhook URL 无效"
+    if channel_type == "email":
+        if "@" not in target or target.startswith("@") or target.endswith("@"):
+            return False, "收件邮箱无效"
+    return True, ""
+
+
+def get_notification_health_summary() -> dict:
+    channels = get_notification_channels()
+    enabled = [c for c in channels if c.get("enabled")]
+    missing = _email_smtp_missing()
+    logs = get_notification_logs(limit=100)
+    last_success = next((l for l in logs if l.get("status") in ("ok", "test_ok")), None)
+    last_failure = next((l for l in logs if l.get("status") in ("error", "test_error")), None)
+    return {
+        "enabled_channels": len(enabled),
+        "total_channels": len(channels),
+        "smtp_ready": not missing,
+        "smtp_status": "SMTP 配置完整" if not missing else "SMTP 配置不完整：" + "、".join(missing),
+        "last_success_at": last_success.get("created_at") if last_success else "",
+        "last_failure_at": last_failure.get("created_at") if last_failure else "",
+        "last_failure_error": last_failure.get("error", "") if last_failure else "",
+    }
+
+
+def send_article_notification(channel_id: int, article_id: int) -> dict:
+    channel = get_notification_channel(channel_id)
+    article = get_article(article_id)
+    if not channel:
+        return {"ok": False, "error": "通知渠道不存在"}
+    if not article:
+        return {"ok": False, "error": "文章不存在"}
+    if not channel.get("enabled"):
+        return {"ok": False, "error": "通知渠道已停用"}
+
+    content = build_notification_content(channel, article)
+    payload = content.get("payload") or {
+        "title": content.get("title", ""),
+        "url": content.get("tracking_url", ""),
+        "original_url": content.get("original_url", ""),
+        "category": content.get("category", ""),
+        "importance": content.get("importance", 0),
+        "conclusion": content.get("conclusion", ""),
+    }
+    payload_text = json.dumps(payload, ensure_ascii=False)
+    try:
+        if channel["channel_type"] == "webhook":
+            resp = requests.post(channel["target"], json=payload, timeout=15)
+            if resp.status_code >= 400:
+                raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+        elif channel["channel_type"] == "email":
+            missing = _email_smtp_missing()
+            if missing:
+                raise RuntimeError("SMTP 配置不完整：" + "、".join(missing))
+            msg = EmailMessage()
+            sender = cfg.get("notify.email.from") or cfg.get("notify.email.username")
+            msg["From"] = sender
+            msg["To"] = channel["target"]
+            msg["Subject"] = content["subject"][:160]
+            msg.set_content(content["body"], charset="utf-8")
+            server = cfg.get("notify.email.smtp_server")
+            port = cfg.get_int("notify.email.smtp_port", 465)
+            username = cfg.get("notify.email.username")
+            password = cfg.get("notify.email.password")
+            with smtplib.SMTP_SSL(server, port, timeout=15) as smtp:
+                if username:
+                    smtp.login(username, password)
+                smtp.send_message(msg)
+        else:
+            raise RuntimeError("通知渠道仅支持 email 或 webhook")
+        record_notification_log(channel_id, article_id, "ok", payload_text)
+        return {"ok": True}
+    except Exception as e:
+        record_notification_log(channel_id, article_id, "error", payload_text, str(e))
+        return {"ok": False, "error": str(e)}
+
+
+def send_recommended_notifications(limit: int = 5, days: int = 1,
+                                   skip_sent: bool = True,
+                                   dedupe_days: int = 7) -> dict:
+    channels = get_notification_channels(enabled_only=True)
+    articles = get_recommended_articles(days=days, limit=limit)
+    if not channels:
+        return {"ok": False, "error": "没有启用的通知渠道", "channels": 0, "articles": len(articles), "sent": 0, "failed": 0}
+    if not articles:
+        return {"ok": False, "error": "没有可推送文章", "channels": len(channels), "articles": 0, "sent": 0, "failed": 0}
+    sent = failed = skipped = 0
+    for channel in channels:
+        for article in articles:
+            if skip_sent and has_successful_notification(article["id"], dedupe_days=dedupe_days):
+                skipped += 1
+                record_notification_log(
+                    channel["id"],
+                    article["id"],
+                    "skipped",
+                    _article_notification_payload(article).get("title", ""),
+                    f"近 {dedupe_days} 天已成功推送",
+                )
+                continue
+            result = send_article_notification(channel["id"], article["id"])
+            if result.get("ok"):
+                sent += 1
+            else:
+                failed += 1
+    return {
+        "ok": failed == 0,
+        "channels": len(channels),
+        "articles": len(articles),
+        "sent": sent,
+        "failed": failed,
+        "skipped": skipped,
+    }
+
+
 def classify_rss_error(error: str = "", status: str = "") -> str:
     """把底层错误归类为页面可读原因。"""
     err = (error or "").lower()
@@ -200,6 +429,21 @@ def run_scheduled_brief():
     threading.Thread(target=_run_brief_job, args=(jid, "md"), daemon=True).start()
 
 
+def run_scheduled_push():
+    limit = cfg.get_int("notify.push.limit", 5)
+    days = cfg.get_int("notify.push.days", 1)
+    skip_sent = cfg.get_bool("notify.push.skip_sent")
+    dedupe_days = cfg.get_int("notify.push.dedupe_days", 7)
+    result = send_recommended_notifications(
+        limit=limit,
+        days=days,
+        skip_sent=skip_sent,
+        dedupe_days=dedupe_days,
+    )
+    logger.info(f"定时推荐推送完成: {result}")
+    return result
+
+
 def _scheduler_loop():
     while True:
         schedule.run_pending()
@@ -207,17 +451,21 @@ def _scheduler_loop():
 
 
 def setup_scheduler(start_thread=True) -> int:
-    """注册 RSS 和简报定时任务。"""
+    """注册 RSS、简报和通知推送定时任务。"""
     global _scheduler_started
     schedule.clear("news_agent")
     jobs = 0
     rss_time = cfg.get("schedule.rss_time", "").strip()
     brief_time = cfg.get("schedule.brief_time", "").strip()
+    push_time = cfg.get("notify.push.time", "").strip()
     if rss_time:
         schedule.every().day.at(rss_time).do(run_scheduled_rss).tag("news_agent")
         jobs += 1
     if brief_time:
         schedule.every().day.at(brief_time).do(run_scheduled_brief).tag("news_agent")
+        jobs += 1
+    if cfg.get_bool("notify.push.enabled") and push_time:
+        schedule.every().day.at(push_time).do(run_scheduled_push).tag("news_agent")
         jobs += 1
     if start_thread and not _scheduler_started:
         threading.Thread(target=_scheduler_loop, daemon=True).start()
@@ -243,15 +491,20 @@ def articles():
     cat     = request.args.get("cat", "")
     min_imp = int(request.args.get("imp", 0))
     search  = request.args.get("q", "")
+    sort    = request.args.get("sort", "")
     page    = int(request.args.get("page", 1))
     per_page = 20
     offset  = (page - 1) * per_page
-    arts    = get_articles(days=days, limit=per_page, offset=offset,
-                           category=cat, min_importance=min_imp, search=search)
+    if sort == "recommend":
+        arts = get_recommended_articles(days=days, limit=per_page, offset=offset,
+                                        category=cat, min_importance=min_imp, search=search)
+    else:
+        arts = get_articles(days=days, limit=per_page, offset=offset,
+                            category=cat, min_importance=min_imp, search=search)
     total   = count_articles(days=days, category=cat, min_importance=min_imp, search=search)
     return render_template("articles.html", articles=arts,
                            days=days, cat=cat, min_imp=min_imp, search=search,
-                           page=page, per_page=per_page, total=total)
+                           sort=sort, page=page, per_page=per_page, total=total)
 
 
 @app.route("/article/<int:aid>")
@@ -259,8 +512,13 @@ def article_detail(aid):
     art = get_article(aid)
     if not art:
         return "文章不存在", 404
+    try:
+        record_article_event(aid, "open")
+    except Exception as e:
+        logger.warning(f"记录文章打开事件失败: {e}")
     related = find_related(art, days=30, top_k=5)
-    return render_template("article_detail.html", article=art, related=related)
+    channels = get_notification_channels(enabled_only=True)
+    return render_template("article_detail.html", article=art, related=related, channels=channels)
 
 
 @app.route("/process")
@@ -323,6 +581,38 @@ def briefs_page():
                 item["content"] = content
     briefs = sorted(brief_map.values(), key=lambda b: b["date"], reverse=True)[:30]
     return render_template("briefs.html", briefs=briefs)
+
+
+@app.route("/notifications")
+def notifications_page():
+    channels = get_notification_channels()
+    recommendations = get_recommended_articles(days=1, limit=10)
+    log_status = request.args.get("status", "").strip()
+    logs = get_notification_logs(limit=30, status=log_status)
+    notification_stats = get_notification_stats(days=7)
+    notification_health = get_notification_health_summary()
+    notify_cfg = cfg.get_all()
+    return render_template("notifications.html",
+                           channels=channels,
+                           recommendations=recommendations,
+                           logs=logs,
+                           notify_cfg=notify_cfg,
+                           log_status=log_status,
+                           notification_stats=notification_stats,
+                           notification_health=notification_health)
+
+
+@app.route("/notifications/click/<int:aid>")
+def notification_click(aid):
+    article = get_article(aid)
+    if not article:
+        return "文章不存在", 404
+    try:
+        record_article_event(aid, "click")
+    except Exception as e:
+        logger.warning(f"记录推送点击事件失败: {e}")
+    target = article.get("url") or f"/article/{aid}"
+    return redirect(target)
 
 
 @app.route("/briefs/<path:filename>")
@@ -521,6 +811,23 @@ def api_topics():
     return jsonify(get_active_topics())
 
 
+@app.route("/api/recommendations")
+def api_recommendations():
+    days = int(request.args.get("days", 7))
+    limit = int(request.args.get("limit", 20))
+    return jsonify(get_recommended_articles(days=days, limit=limit))
+
+
+@app.route("/api/articles/<int:aid>/event", methods=["POST"])
+def api_article_event(aid):
+    event_type = (request.json or {}).get("event", "").strip()
+    try:
+        event_id = record_article_event(aid, event_type)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "event_id": event_id, "counts": get_article_event_counts(aid)})
+
+
 @app.route("/api/rss-health")
 def api_rss_health():
     return jsonify(get_rss_health())
@@ -536,6 +843,191 @@ def api_cache_clear():
     days = (request.json or {}).get("days", 30)
     n = cache_clear(days=days)
     return jsonify({"cleared": n})
+
+
+@app.route("/api/notification-channels", methods=["GET"])
+def api_notification_channels_get():
+    return jsonify(get_notification_channels())
+
+
+@app.route("/api/notification-channels", methods=["POST"])
+def api_notification_channels_post():
+    denied = _require_access_token()
+    if denied:
+        return denied
+    data = request.json or {}
+    if data.get("channel_type") == "telegram":
+        return jsonify({"error": "当前阶段不支持 Telegram"}), 400
+    ok, msg = _validate_notification_channel(data)
+    if not ok:
+        return jsonify({"error": msg}), 400
+    try:
+        channel_id = save_notification_channel(data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "id": channel_id})
+
+
+@app.route("/api/notification-channels/<int:channel_id>", methods=["PUT"])
+def api_notification_channels_put(channel_id):
+    denied = _require_access_token()
+    if denied:
+        return denied
+    if not get_notification_channel(channel_id):
+        return jsonify({"error": "通知渠道不存在"}), 404
+    data = request.json or {}
+    data["id"] = channel_id
+    if data.get("channel_type") == "telegram":
+        return jsonify({"error": "当前阶段不支持 Telegram"}), 400
+    ok, msg = _validate_notification_channel(data)
+    if not ok:
+        return jsonify({"error": msg}), 400
+    try:
+        save_notification_channel(data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "id": channel_id})
+
+
+@app.route("/api/notification-channels/<int:channel_id>", methods=["DELETE"])
+def api_notification_channels_delete(channel_id):
+    denied = _require_access_token()
+    if denied:
+        return denied
+    deleted = delete_notification_channel(channel_id)
+    if not deleted:
+        return jsonify({"error": "通知渠道不存在"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/notification-channels/<int:channel_id>/test", methods=["POST"])
+def api_notification_channels_test(channel_id):
+    denied = _require_access_token()
+    if denied:
+        return denied
+    channel = get_notification_channel(channel_id)
+    if not channel:
+        return jsonify({"ok": False, "error": "通知渠道不存在"}), 404
+    if channel["channel_type"] == "email":
+        missing = _email_smtp_missing()
+        if missing:
+            return jsonify({"ok": False, "error": "SMTP 配置不完整：" + "、".join(missing)}), 400
+    article_id = (request.json or {}).get("article_id")
+    if not article_id:
+        articles = get_recommended_articles(days=365, limit=1)
+        if not articles:
+            return jsonify({"ok": False, "error": "没有可用于测试发送的文章"}), 400
+        article_id = articles[0]["id"]
+    result = send_article_notification(channel_id, article_id)
+    if result.get("ok"):
+        record_notification_log(channel_id, article_id, "test_ok", "测试发送成功")
+    else:
+        record_notification_log(channel_id, article_id, "test_error", "测试发送失败", result.get("error", ""))
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/notification-channels/test-all", methods=["POST"])
+def api_notification_channels_test_all():
+    denied = _require_access_token()
+    if denied:
+        return denied
+    channels = get_notification_channels(enabled_only=True)
+    articles = get_recommended_articles(days=365, limit=1)
+    if not articles:
+        return jsonify({"ok": False, "error": "没有可用于测试发送的文章"}), 400
+    article_id = articles[0]["id"]
+    ok_count = failed = 0
+    results = []
+    for channel in channels:
+        result = send_article_notification(channel["id"], article_id)
+        if result.get("ok"):
+            ok_count += 1
+            record_notification_log(channel["id"], article_id, "test_ok", "测试发送成功")
+        else:
+            failed += 1
+            record_notification_log(channel["id"], article_id, "test_error", "测试发送失败", result.get("error", ""))
+        results.append({"channel_id": channel["id"], "name": channel["name"], **result})
+    return jsonify({"success": failed == 0, "tested": len(channels), "ok": ok_count,
+                    "failed": failed, "results": results})
+
+
+@app.route("/api/notification-logs")
+def api_notification_logs():
+    channel_id = request.args.get("channel_id")
+    status = request.args.get("status", "").strip()
+    return jsonify(get_notification_logs(channel_id=int(channel_id) if channel_id else None, status=status))
+
+
+@app.route("/api/notification-logs/export")
+def api_notification_logs_export():
+    denied = _require_access_token()
+    if denied:
+        return denied
+    channel_id = request.args.get("channel_id")
+    status = request.args.get("status", "").strip()
+    logs = get_notification_logs(channel_id=int(channel_id) if channel_id else None,
+                                 status=status, limit=10000)
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["created_at", "channel_name", "article_title", "status", "error", "payload"])
+    for log in logs:
+        writer.writerow([
+            log.get("created_at", ""),
+            log.get("channel_name", ""),
+            log.get("article_title") or "",
+            log.get("status", ""),
+            log.get("error", ""),
+            log.get("payload", ""),
+        ])
+    resp = Response(out.getvalue(), mimetype="text/csv; charset=utf-8")
+    resp.headers["Content-Disposition"] = "attachment; filename=notification-logs.csv"
+    return resp
+
+
+@app.route("/api/notifications/send", methods=["POST"])
+def api_notification_send():
+    denied = _require_access_token()
+    if denied:
+        return denied
+    data = request.json or {}
+    result = send_article_notification(data.get("channel_id"), data.get("article_id"))
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/notifications/preview")
+def api_notification_preview():
+    channel_id = request.args.get("channel_id")
+    article_id = request.args.get("article_id")
+    channel = get_notification_channel(int(channel_id)) if channel_id else None
+    article = get_article(int(article_id)) if article_id else None
+    if not channel:
+        return jsonify({"error": "通知渠道不存在"}), 404
+    if not article:
+        return jsonify({"error": "文章不存在"}), 404
+    try:
+        content = build_notification_content(channel, article)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({
+        "channel": {"id": channel["id"], "name": channel["name"], "channel_type": channel["channel_type"], "target": channel["target"]},
+        "article": {"id": article["id"], "title": article["title"], "category": article["category"]},
+        "content": content,
+    })
+
+
+@app.route("/api/notifications/send-recommended", methods=["POST"])
+def api_notification_send_recommended():
+    denied = _require_access_token()
+    if denied:
+        return denied
+    data = request.json or {}
+    result = send_recommended_notifications(
+        limit=int(data.get("limit", 5)),
+        days=int(data.get("days", 1)),
+        skip_sent=bool(data.get("skip_sent", cfg.get_bool("notify.push.skip_sent"))),
+        dedupe_days=int(data.get("dedupe_days", cfg.get_int("notify.push.dedupe_days", 7))),
+    )
+    return jsonify(result), (200 if result.get("ok") else 400)
 
 
 # ============================================================
@@ -555,9 +1047,13 @@ def api_config_set():
     if not data:
         return jsonify({"error": "空数据"}), 400
     # 安全过滤：只允许更新已知 key 或以合法前缀开头的 key
-    allowed_prefixes = ("llm.", "feature.", "rss.", "email.", "brief.", "schedule.", "web.", "pref.")
+    allowed_prefixes = ("llm.", "feature.", "rss.", "email.", "brief.", "schedule.", "web.", "pref.", "notify.")
     filtered = {k: v for k, v in data.items()
                 if any(k.startswith(p) for p in allowed_prefixes)}
+    if any(k.startswith("notify.") or k.startswith("web.access_token") for k in filtered):
+        denied = _require_access_token()
+        if denied:
+            return denied
     errors = cfg.set_many(filtered)
     if errors:
         return jsonify({"ok": False, "saved": len(filtered) - len(errors), "errors": errors}), 400
@@ -579,7 +1075,7 @@ def api_config_put(key):
     ok, msg = cfg.validate_config(key, value)
     if not ok:
         return jsonify({"error": msg}), 400
-    cfg.set(key, value)
+    cfg.set_config(key, value)
     return jsonify({"ok": True})
 
 
@@ -614,7 +1110,7 @@ def api_prefs_set():
     }
     for k, ck in mapping.items():
         if k in d:
-            cfg.set(ck, d[k])
+            cfg.set_config(ck, d[k])
     return jsonify({"ok": True})
 
 
@@ -641,7 +1137,7 @@ def run():
     secret_key = cfg.get("web.secret_key")
     if not secret_key:
         secret_key = uuid.uuid4().hex
-        cfg.set("web.secret_key", secret_key)
+        cfg.set_config("web.secret_key", secret_key)
     app.secret_key = secret_key
     setup_scheduler()
     host  = cfg.get("web.host", "127.0.0.1")

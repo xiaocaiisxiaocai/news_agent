@@ -1,7 +1,7 @@
 # ============================================================
 # config_store.py —— 所有配置存 SQLite，Web 页面可读写
 # ============================================================
-# 不再有 config.py 硬编码配置。所有设置通过 get(key) / set(key, value) 操作。
+# 不再有 config.py 硬编码配置。所有设置通过 get(key) / set_config(key, value) 操作。
 # 首次运行自动写入默认值。
 
 import sqlite3, json, os, builtins
@@ -85,9 +85,23 @@ DEFAULTS = {
     "schedule.rss_time":   "08:30",
     "schedule.brief_time": "21:00",
 
+    # 通知自动推送
+    "notify.push.enabled": "false",
+    "notify.push.time":    "09:00",
+    "notify.push.limit":   "5",
+    "notify.push.days":    "1",
+    "notify.push.skip_sent": "true",
+    "notify.push.dedupe_days": "7",
+    "notify.template.email_subject": "[资讯] {title}",
+    "notify.template.email_body": "{title}\n\n{conclusion}\n\n追踪链接：{tracking_url}\n原文链接：{original_url}",
+    "notify.template.webhook_include_summary": "true",
+    "notify.template.webhook_include_original_url": "true",
+
     # Web
     "web.host": "127.0.0.1",
     "web.port": "5000",
+    "web.access_token.enabled": "false",
+    "web.access_token": "",
 }
 
 RSS_FEED_MIGRATIONS = {
@@ -106,11 +120,8 @@ arXiv NLP	https://rss.arxiv.org/rss/cs.CL	学术	1	官方 RSS	自然语言处理
 arXiv 计算机视觉	https://rss.arxiv.org/rss/cs.CV	学术	1	官方 RSS	CV 论文预印本
 Hacker News AI	https://hnrss.org/newest?q=AI	科技/AI	1	官方 RSS	HN AI 相关
 Hacker News LLM	https://hnrss.org/newest?q=LLM	科技/AI	1	官方 RSS	HN 大模型相关
-Hacker News OpenClaw	https://hnrss.org/newest?q=OpenClaw	科技/AI	1	官方 RSS	HN 上的 OpenClaw 讨论
 Hugging Face 博客	https://huggingface.co/blog/feed.xml	科技/AI	1	官方 RSS	开源 AI 社区
 Stability AI	https://stability.ai/news?format=rss	科技/AI	1	官方 RSS	Stable Diffusion
-OpenClaw Releases	https://github.com/openclaw/openclaw/releases.atom	科技/AI	1	官方 RSS	OpenClaw 版本发布
-OpenClaw Commits	https://github.com/openclaw/openclaw/commits/main.atom	科技/AI	1	官方 RSS	主分支开发动态
 机器之心	https://www.jiqizhixin.com/rss	科技/AI	1	官方 RSS	国内 AI 媒体
 Simon Willison 博客	https://simonwillison.net/atom/everything/	科技/AI	1	官方 RSS	LLM 洞察
 LinuxDo 最新话题	https://linux.do/latest.rss	科技/AI	1	官方 RSS	社区最新话题
@@ -218,7 +229,7 @@ Bilibili 排行榜	https://rsshub.app/bilibili/ranking/0/3/1	B站	1	RSSHub	全�
 
 
 def _ensure():
-    os.makedirs("data", exist_ok=True)
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
 
 @contextmanager
@@ -493,12 +504,15 @@ def get_json(key: str, fallback=None):
         return fallback
 
 
-def set(key: str, value):
+def set_config(key: str, value):
     """写一条配置。value 如果是 list/dict 会自动 JSON 序列化。"""
     if isinstance(value, (dict, list)):
         value = json.dumps(value, ensure_ascii=False)
     with _conn() as c:
         c.execute("INSERT OR REPLACE INTO config (key,value) VALUES (?,?)", (key, str(value)))
+
+
+put = set_config
 
 
 def validate_config(key: str, value) -> tuple[bool, str]:

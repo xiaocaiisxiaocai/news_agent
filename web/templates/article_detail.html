@@ -19,6 +19,27 @@
   {% if article.action and article.action!='无' %}<div style="font-size:13px;color:var(--info);padding:8px 12px;background:rgba(26,111,184,.06);border-radius:var(--r);margin-bottom:12px">⚡ {{article.action}}</div>{% endif %}
   {% if article.keywords %}<div>{% for k in article.keywords %}<span class="tag">{{k}}</span>{% endfor %}</div>{% endif %}
 </div>
+<div class="card">
+  <h2>推送本文</h2>
+  {% if channels %}
+  <div class="row">
+    <div class="field">
+      <label>通知渠道</label>
+      <select id="push-channel">
+        {% for c in channels %}
+        <option value="{{c.id}}">{{c.name}}（{{c.channel_type}}）</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn-p shrink" style="align-self:flex-end" onclick="sendCurrentArticle()">推送本文</button>
+    <span id="push-result" class="shrink" style="font-size:13px;color:var(--t2)"></span>
+  </div>
+  {% else %}
+  <div class="empty" style="padding:16px 0;text-align:left">
+    还没有启用通知渠道，先到 <a href="/notifications">通知推送</a> 添加邮件或 Webhook 渠道。
+  </div>
+  {% endif %}
+</div>
 {% if article.summary %}
 <div class="card"><h2>完整摘要</h2>
   <pre style="font:13px/1.8 inherit;white-space:pre-wrap;color:var(--t2)">{{article.summary}}</pre></div>{% endif %}
@@ -31,4 +52,21 @@
     {% for k in r.overlap_keywords %}<span class="tag">{{k}}</span>{% endfor %}
   </div>{% endfor %}
 </div>{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+async function sendCurrentArticle(){
+  const channelId = parseInt(document.getElementById('push-channel').value);
+  const result = document.getElementById('push-result');
+  result.textContent = '发送中...';
+  const d = await api('/api/notifications/send', {channel_id: channelId, article_id: {{article.id}}});
+  if(d.ok){
+    result.style.color = 'var(--ok)';
+    result.textContent = '已发送';
+  }else{
+    result.style.color = 'var(--err)';
+    result.textContent = d.error || '发送失败';
+  }
+}
+</script>
 {% endblock %}

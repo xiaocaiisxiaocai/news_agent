@@ -57,12 +57,15 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
   <a href="/topics" class="{{ 'on' if request.path=='/topics' else '' }}">趋势</a>
   <a href="/quality" class="{{ 'on' if request.path=='/quality' else '' }}">质量</a>
   <a href="/briefs" class="{{ 'on' if request.path=='/briefs' else '' }}">简报</a>
+  <a href="/notifications" class="{{ 'on' if request.path=='/notifications' else '' }}">通知</a>
   <a href="/settings" class="{{ 'on' if request.path=='/settings' else '' }}">设置</a>
 </nav>
 <main>{% block content %}{% endblock %}</main>
 <script>
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
-async function api(url,data){const r=await fetch(url,data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});return r.json()}
+function accessTokenFromUrl(){return new URLSearchParams(location.search).get('token')||''}
+function requestHeaders(json=true){const h=json?{'Content-Type':'application/json'}:{};const t=accessTokenFromUrl();if(t)h['X-Access-Token']=t;return h}
+async function api(url,data){const r=await fetch(url,data?{method:'POST',headers:requestHeaders(true),body:JSON.stringify(data)}:{headers:requestHeaders(false)});return r.json()}
 function flash(el,msg,ok=true){el.className='flash on '+(ok?'flash-ok':'flash-err');el.textContent=msg;setTimeout(()=>el.classList.remove('on'),3500)}
 function pollJob(jid,logEl,barEl,statEl,cb){
   const iv=setInterval(async()=>{

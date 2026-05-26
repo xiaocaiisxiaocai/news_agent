@@ -2,7 +2,7 @@
 # llm_client.py —— LLM 调用，配置来自 config_store
 # ============================================================
 
-import time, hashlib, logging, threading
+import time, hashlib, logging, threading, json
 from openai import OpenAI, APIError, APITimeoutError, RateLimitError
 import config_store as cfg
 from storage import cache_get, cache_set
@@ -11,38 +11,39 @@ logger = logging.getLogger("llm")
 
 # ── 客户端复用 ─────────────────────────────────────────────
 
-_client_cache: dict = {}   # {"base_url|api_key": OpenAI}
+_client_cache: dict = {}   # {"base_url|api_key|timeout": OpenAI}
 _client_lock = threading.Lock()
-_last_call_time = 0.0
+_last_call_times = {}
 _rate_lock = threading.Lock()
 
 
 def _get_client(base_url: str, api_key: str, timeout: int) -> OpenAI:
     """复用相同配置的 OpenAI client 实例，避免重复建连"""
-    cache_key = f"{base_url}|{api_key}"
+    cache_key = f"{base_url}|{api_key}|{timeout}"
     with _client_lock:
         if cache_key not in _client_cache:
             _client_cache[cache_key] = OpenAI(
                 api_key=api_key, base_url=base_url, timeout=timeout
             )
-        client = _client_cache[cache_key]
-        # 更新 timeout
-        client.timeout = timeout
-        return client
+        return _client_cache[cache_key]
 
 
-def _rate_limit(min_interval: float = 0.5):
-    """简单速率限制，避免过快调用 API"""
-    global _last_call_time
+def _rate_limit(scope: str, min_interval: float = 0.5):
+    """按 API 地址限速，避免不同供应商互相阻塞。"""
     with _rate_lock:
-        elapsed = time.time() - _last_call_time
+        now = time.time()
+        last_call_time = _last_call_times.get(scope, 0.0)
+        elapsed = now - last_call_time
+        wait = 0.0
         if elapsed < min_interval:
-            time.sleep(min_interval - elapsed)
-        _last_call_time = time.time()
+            wait = min_interval - elapsed
+            time.sleep(wait)
+        _last_call_times[scope] = now + wait
 
 
 def _hash(sys_p: str, user_p: str, model: str) -> str:
-    return hashlib.md5(f"{sys_p}|||{user_p}|||{model}".encode()).hexdigest()
+    payload = json.dumps([sys_p, user_p, model], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def chat(system_prompt: str, user_content: str,
@@ -65,12 +66,12 @@ def chat(system_prompt: str, user_content: str,
     # 查缓存
     if use_cache:
         key = _hash(system_prompt, user_content, model)
-        hit = cache_get(key)
+        hit = cache_get(key, max_age_days=cfg.get_int("llm.cache_max_age_days", 30))
         if hit is not None:
             return hit
 
     client = _get_client(lc["base_url"], lc["api_key"], lc["timeout"])
-    _rate_limit()
+    _rate_limit(lc["base_url"])
 
     last_err = None
     for attempt in range(max_retries + 1):
